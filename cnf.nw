@@ -1,0 +1,909 @@
+\documentclass{article}
+
+\usepackage{noweb}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[colorlinks,linkcolor=blue]{hyperref}
+\usepackage{parskip}
+\usepackage{microtype}
+\usepackage{geometry}
+\usepackage{amsmath}
+\usepackage[titletoc,title]{appendix}
+
+\usepackage{pifont}% http://ctan.org/pkg/pifont
+\newcommand{\cmark}{\ding{51}}
+\newcommand{\xmark}{\ding{55}}
+
+\newcommand{\exprref}[1]{Expression~\ref{#1}}
+
+\title{Exploiting CNF Common Clauses for Faster Evaluation}
+\author{Vincent Foley}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\noindent
+We show how representing boolean expressions in conjunctive-normal form (CNF)
+allows for an evaluation strategy that
+(1) avoids unnecessarily recomputing common clauses, and
+(2) can avoid evaluating an expression if one of its clauses has already failed.
+\end{abstract}
+
+\section{Introduction}
+
+The core task of \emph{rtb-boolean} is to return a list of flight ids that
+match the parameters of a bid request%
+\footnote{Other objects such as products and usegments use the same
+infrastructure, but to make the language more concrete in this document,
+we'll concentrate on flights.}%
+.
+
+The current evaluation strategy is simple:
+for every flight, we evaluate its associated boolean expression using
+the fields and values from a bid request.
+If the evaluation succeeds, we record the flight's id in a list of matches.
+This strategy is captured in [[<<find matches naively>>]].
+In addition to its simplicity, an advantage of this technique
+is that it does not require that the
+boolean expressions have any specific structure; any combination
+of the operators ``AND'', ``OR'', and ``NOT'' is acceptable.
+
+<<find matches naively>>=
+fn find_matches(bid_request, flights):
+    matches := []
+    for i := 0 .. len(flights):
+        if eval(bid_request, flights[i].expr):
+            matches.add(i)
+    return matches
+@
+
+The main weakness of this approach is that it considers expressions in
+isolation; it does not try to exploit the shared environment (the bid
+request) nor the fact that many flights may share common clauses.
+
+To address this weakness, we reformulate the boolean expressions into
+CNF and exploit that structure to perform fewer evaluations.
+
+\subsection{Conjunctive-normal form}
+
+An expression is in conjunctive-normal form if it is
+a conjunction of clauses.  A clause is a disjunction
+of literals, and a literal is either a variable or
+the negation of a literal.
+
+In the examples below, \exprref{eq:cnf} is CNF
+because it has three clauses joined by conjuctions, and
+none of the clauses uses the conjunctive operator.
+\exprref{eq:not-cnf-1} uses conjunction in one of
+its sub-expressions, and the clauses of \exprref{eq:not-cnf-2}
+are not all joined by conjunctions, and thus neither is in CNF.
+We may think that \exprref{eq:not-cnf-3} is in CNF,
+however the negation of a clause is not a clause,
+and therefore it is not in CNF.
+
+\begin{align}
+  \text{\cmark} \quad & X \wedge (Y \vee Z) \wedge \neg W   \label{eq:cnf} \\
+  \text{\xmark} \quad & X \wedge (Y \wedge Z) \wedge \neg W \label{eq:not-cnf-1} \\
+  \text{\xmark} \quad & X \wedge (Y \wedge Z) \vee \neg W   \label{eq:not-cnf-2} \\
+  \text{\xmark} \quad & X \wedge (Y \vee Z) \wedge \neg (W \vee X \vee Y)   \label{eq:not-cnf-3}
+\end{align}
+
+\subsection{CNF-aware matching}
+
+If the boolean expressions are in conjunctive-normal form,
+we can improve our matching strategy:
+if a clause $C$ fails (i.e., evaluates to false),
+we can discard all the expressions that involve $C$,
+because we know they will all fail too.
+
+In the example below, the expressions share the clause $X$.
+If during the evaluation of \exprref{eq:expr1} we find that $X = false$,
+then we don't need to evaluate any clause of \exprref{eq:expr2}.
+This means that the sub-expressions $F$, $G$, and $H$ will never
+need to be evaluated.  We hope that skipping clauses in this
+way will yield an appreciable speed-up over a
+
+\begin{align}
+    X \wedge (A \vee B) \wedge C        \label{eq:expr1} \\
+    (F \vee G) \wedge X \wedge \neg H   \label{eq:expr2}
+\end{align}
+
+\subsection{Implementation}
+
+We will implement a prototype of CNF-aware matching using Rust.
+We use Rust for two main reasons: (1) being compiled to machine
+code with LLVM, it should give us a fairer assessment of the
+performance we can expect when we do the implementation in C;
+(2) Rust provides a number of language features that should
+help make this prototype easier to write (e.g., enums and
+pattern matching) and harder to get wrong (e.g., static
+type checking and borrow checking).
+
+\section{Data structures}
+
+In this section, we define the data structure to represent
+boolean expressions.
+
+\subsection{Expressions}
+
+We first define expressions that are \textbf{not} expected to be in
+conjunctive-normal form: they represent the expressions as written by
+users.  A later section will automate the conversion to CNF.
+
+To simplify the prototype, we intentionally gut the boolean language
+to only 4 constructs, which are described in the enum [[Expr]].
+In the complete implementation, we will also have boolean literals,
+numeric comparisons, list operations (\emph{all of}, \emph{not in}, etc.),
+and functions.  All these will be literals, which is why we allow
+ourselves only to have one node (\emph{Var}) as a representative
+of literals.
+
+<<type definitions>>=
+#[derive(Debug, PartialOrd, PartialEq, Clone)]
+enum Expr {
+    Var(usize),     // Variables are distinguished by a numeric id
+    And(Vec<Expr>), // The conjunction of multiple expressions
+    Or(Vec<Expr>),  // The disjunction of multiple expression
+    Not(Box<Expr>)  // The negation of an expression
+}
+
+impl Expr {
+    <<expression methods>>
+}
+@
+
+\subsection{CNF Expressions}
+
+Let us also define data structures for CNF expressions.
+The [[Expr]] enum defined above could be used,
+but it does not enforce that an expression be in conjunctive-normal form.
+By defining a type for CNF expressions, CNF clauses, and
+literals, we can make sure that it is impossible to even
+construct an expression that is not CNF.
+
+<<type definitions>>=
+#[derive(Debug, PartialEq)]
+struct CNFExpr(Vec<CNFClause>);
+
+#[derive(Debug, PartialEq)]
+struct CNFClause(Vec<CNFLiteral>);
+
+#[derive(Debug, PartialEq)]
+enum CNFLiteral {
+    Var(usize),
+    Not(Box<CNFLiteral>)
+}
+
+<<cnf methods>>
+@
+
+Constructing a CNF Expression structure by hand isn't hard,
+but it's certainly verbose.  In the next chunk, we'll introduce
+a few constructors to make code that creates CNF expressions
+(such as tests and CNF conversion) shorter.
+
+<<cnf methods>>=
+impl CNFExpr {
+    fn var(n: usize) -> CNFExpr {
+        CNFExpr(vec![CNFClause(vec![CNFLiteral::Var(n)])])
+    }
+
+    fn not(n: usize) -> CNFExpr {
+        CNFExpr(vec![CNFClause(vec![
+            CNFLiteral::Not(Box::new(CNFLiteral::Var(n)))])])
+    }
+}
+@
+
+\subsection{Utility methods}
+
+In this subsection we'll implement a number of utility methods
+on expressions and CNF expressions.
+
+Our first order of business is to provide a way to print expressions;
+the default format of [[Debug]] quickly gets unreadble
+with all the extra boxes and vectors.
+
+<<functions>>=
+impl fmt::Display for Expr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            Expr::Var(n) => { write!(f, "{}", n) }
+            Expr::Not(ref sub) => { write!(f, "!{}", sub) }
+            Expr::And(ref subs) => {
+                let mut first = true;
+                let _ = write!(f, "(");
+                for sub in subs {
+                    if !first { let _ = write!(f, " & "); }
+                    first = false;
+                    let _ = write!(f, "{}", sub);
+                }
+                write!(f, ")")
+            }
+            Expr::Or(ref subs) => {
+                let mut first = true;
+                let _ = write!(f, "(");
+                for sub in subs {
+                    if !first { let _ = write!(f, " | "); }
+                    first = false;
+                    let _ = write!(f, "{}", sub);
+                }
+                write!(f, ")")
+            }
+        }
+    }
+}
+@
+
+<<unit tests>>=
+#[test]
+fn test_expr_display() {
+    use super::Expr;
+    assert_eq!("0", format!("{}", Expr::from_str("0")));
+    assert_eq!("!0", format!("{}", Expr::from_str("!0")));
+    assert_eq!("(0 & 1)", format!("{}", Expr::from_str("0 & 1")));
+    assert_eq!("(0 | 1)", format!("{}", Expr::from_str("0 | 1")));
+    assert_eq!("(0 | (1 & 2))", format!("{}", Expr::from_str("0 | 1 & 2")));
+}
+@
+
+
+<<functions>>=
+impl fmt::Display for CNFExpr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        if self.0.len() == 0 { write!(f, "") }
+        else if self.0.len() == 1 { write!(f, "{}", self.0[0]) }
+        else {
+            let mut first = true;
+            for clause in &self.0 {
+                if !first { let _ = write!(f, " & "); }
+                write!(f, "{}", clause);
+                first = false;
+            }
+            write!(f, "")
+        }
+    }
+}
+
+impl fmt::Display for CNFClause {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        if self.0.len() == 0 { write!(f, "") }
+        else if self.0.len() == 1 { write!(f, "{}", self.0[0]) }
+        else {
+            write!(f, "(");
+            let mut first = true;
+            for clause in &self.0 {
+                if !first { let _ = write!(f, " | "); }
+                write!(f, "{}", clause);
+                first = false;
+            }
+            write!(f, ")")
+        }
+    }
+}
+
+impl fmt::Display for CNFLiteral {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            CNFLiteral::Var(n) => write!(f, "{}", n),
+            CNFLiteral::Not(ref inner) => write!(f, "!{}", inner)
+        }
+    }
+}
+@
+
+<<unit tests>>=
+#[test]
+fn test_cnf_display() {
+    use super::{CNFExpr, CNFClause, CNFLiteral};
+    assert_eq!("", format!("{}", CNFExpr(vec!())));
+    assert_eq!("0", format!("{}",
+        CNFExpr(vec!(CNFClause(vec!(CNFLiteral::Var(0)))))));
+    assert_eq!("(0 | 1)", format!("{}",
+        CNFExpr(vec!(CNFClause(vec!(CNFLiteral::Var(0),
+                                    CNFLiteral::Var(1)))))));
+    assert_eq!("(0 | 1) & !2", format!("{}",
+        CNFExpr(vec!(CNFClause(vec!(CNFLiteral::Var(0),
+                                    CNFLiteral::Var(1))),
+                     CNFClause(vec!(CNFLiteral::Not(Box::new(CNFLiteral::Var(2)))))))));
+}
+@
+
+Next, we implement a method to return the size of
+an expression or a CNF expression.  The size is
+the number of variables used in the expression.  This is a useful
+metric as some of the conversion to CNF can create
+duplicates of some variables. (This is especially
+true inthe handling of the \emph{or} operator.)
+
+<<expression methods>>=
+fn size(&self) -> usize {
+    match *self {
+        Expr::Var(_) => 1,
+        Expr::Not(ref subexpr) => subexpr.size(),
+        Expr::Or(ref subexprs)
+        | Expr::And(ref subexprs) => subexprs.iter().map(|x| x.size()).sum()
+    }
+}
+@
+
+<<unit tests>>=
+#[test]
+fn test_size() {
+    use super::Expr;
+    assert_eq!(0, Expr::Or(vec![]).size());
+    assert_eq!(0, Expr::And(vec![]).size());
+    assert_eq!(1, Expr::from_str("0").size());
+    assert_eq!(1, Expr::from_str("!0").size());
+    assert_eq!(2, Expr::from_str("!0 & 1").size());
+    assert_eq!(2, Expr::from_str("!0 | !1").size());
+}
+@
+
+
+<<cnf methods>>=
+impl CNFExpr {
+    fn len(&self) -> usize {
+        self.0.iter().map(|clause| clause.len()).sum()
+    }
+}
+
+impl CNFClause {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+@
+
+
+
+\section{Parsing}
+
+Even simple expressions can become long and hard to understand
+if we only use the Rust syntax to read and write them.
+To alleviate this task, we create a small parser that can read
+expressions as strings and generate the equivalent [[Expr]] structure.
+
+Thanks to the simplicity of [[Expr]], our grammar for the language
+is very simple.
+
+\begin{verbatim}
+digit      ::= '0' | '1' | ... | '9'
+identifier ::= digit { digit }
+expr       ::= term { '|' term }
+term       ::= fact { '&' term }
+fact       ::= identifier
+             | '(' expr ')'
+             | '!' fact
+\end{verbatim}
+
+
+\subsection{Scanner}
+
+We use the traditional approach of splitting scanning
+and parsing.  Our scanner recognizes the 7 types of
+tokens described in the enumeration [[Token]].
+
+[[Eof]] is a token that we add at the end of the token
+stream to make it easier in the parser to know when we
+are done parsing.
+
+<<type definitions>>=
+#[derive(Debug, Clone, PartialOrd, PartialEq)]
+enum Token {
+    Eof, LParen, RParen, Ampersand, Pipe, Bang, Int(usize)
+}
+@
+
+The scanning function is quite simple (again, mostly due to
+the limited language); we inspect each character one at a time
+and generate the appropriate token.
+
+If the current character is one of `(', `)', `\&, `\textbar', or `!',
+we emit the associated token.  If the current character is a digit, we
+keep reading digits until we find a non-digit or until the end of the string.
+Spaces and newlines are ignored, and reading any other character causes a panic.
+
+<<parse functions>>=
+fn scan(s: &str) -> Vec<Token> {
+    let mut toks = Vec::new();
+    let mut i = 0;
+    let b = s.as_bytes();
+    while i < b.len() {
+        match b[i] {
+            b'(' => { toks.push(Token::LParen); i += 1; }
+            b')' => { toks.push(Token::RParen); i += 1; }
+            b'&' => { toks.push(Token::Ampersand); i += 1; }
+            b'|' => { toks.push(Token::Pipe); i += 1; }
+            b'!' => { toks.push(Token::Bang); i += 1; }
+            d if d >= b'0' && d <= b'9' => {
+                let mut numeral = String::new();
+                while i < b.len() && b[i] >= b'0' && b[i] <= b'9' {
+                    numeral.push(b[i] as char);
+                    i += 1;
+                }
+                let id = numeral.parse::<usize>().unwrap();
+                toks.push(Token::Int(id));
+            }
+            d if d == b' ' || d == b'\n' => { i += 1; }
+            _ => { panic!("Invalid character: {}", b[i]); }
+        }
+    }
+    toks.push(Token::Eof);
+    return toks;
+}
+@
+
+Here is a simple unit test for the scanner.  If this
+was a more important project, many more tests would
+be required.
+
+<<unit tests>>=
+#[test]
+fn test_scan() {
+    use Token::*;
+    use super::scan;
+    assert_eq!(vec![LParen, Int(0), Pipe, Int(14), RParen,
+                    Ampersand, Bang, Int(12345), Eof],
+               scan("(0 | 14)&!12345"));
+}
+@
+
+\subsection{Parser}
+
+We do parsing with a simple predictive, recursive descent.
+The structure [[ParserState]] will keep track of the current
+state of parsing: it has a list of tokens returned by [[scan]]
+from the previous section, and an index points to the current
+token.  We don't need a look-ahead token.
+
+We implement two methods on the [[ParseState]]: one to
+obtain a copy of the current token, and a method to move
+to the next token.
+
+<<type definitions>>=
+struct ParseState {
+    tokens: Vec<Token>,
+    curr: usize
+}
+
+impl ParseState {
+    fn peek(&self) -> Token {
+        self.tokens[self.curr].clone()
+    }
+
+    fn eat(&mut self) {
+        self.curr += 1;
+    }
+}
+@
+
+
+Our parser is invoked from a static method on expressions,
+[[from_str]]; this method will invoke the scanner and the
+parser.
+
+<<expression methods>>=
+fn from_str(s: &str) -> Expr {
+    let toks = scan(s);
+    let mut state = ParseState {
+        tokens: toks,
+        curr: 0
+    };
+    return parse_expr(&mut state);
+}
+@
+
+Again, thanks to the simplicity of the language, and also
+because we don't need to create something very maintainable
+or fast, we can use simple techniques to create our parser.
+Our strategy is simple: non-terminals in the grammar are
+functions, when a rule refers to a non-terminal we do a
+function call, and when it refers to a terminal, we use
+[[peek]] to ensure that the correct token follows and
+then use [[eat]] to move to the next item.
+
+The repetition braces are implemented with a while loop.
+
+<<parse functions>>=
+fn parse_expr(state: &mut ParseState) -> Expr {
+    let mut subexprs = Vec::new();
+    let t1 = parse_term(state);
+    subexprs.push(t1);
+    while state.peek() == Token::Pipe {
+        state.eat();
+        let t = parse_term(state);
+        subexprs.push(t);
+    }
+    if subexprs.len() == 1 {
+        return subexprs[0].clone();
+    } else {
+        return Expr::Or(subexprs);
+    }
+}
+@
+
+<<parse functions>>=
+fn parse_term(state: &mut ParseState) -> Expr {
+    let mut subexprs = Vec::new();
+    let f1 = parse_factor(state);
+    subexprs.push(f1);
+    while state.peek() == Token::Ampersand {
+        state.eat();
+        let f = parse_factor(state);
+        subexprs.push(f);
+    }
+    if subexprs.len() == 1 {
+        return subexprs[0].clone();
+    } else {
+        return Expr::And(subexprs);
+    }
+}
+@
+
+<<parse functions>>=
+fn parse_factor(state: &mut ParseState) -> Expr {
+    match state.peek() {
+        Token::Int(id) => { state.eat(); Expr::Var(id) }
+        Token::LParen => {
+            state.eat();
+            let e = parse_expr(state);
+            if state.peek() == Token::RParen {
+                state.eat();
+                return e;
+            } else {
+                panic!("unmatched parenthesis");
+            }
+        }
+        Token::Bang => {
+            state.eat();
+            let f = parse_factor(state);
+            return Expr::Not(Box::new(f));
+        }
+        t => { panic!("unexpected token {:?}", t); }
+    }
+}
+@
+
+
+Similar to the scanner, we create way too few tests
+for the parser.
+
+<<unit tests>>=
+#[test]
+fn test_from_str() {
+    use super::Expr;
+    use super::Expr::*;
+    assert_eq!(Var(3), Expr::from_str("3"));
+    assert_eq!(Or(vec![Var(0), Var(1)]),
+        Expr::from_str("0 | 1"));
+    assert_eq!(And(vec![Var(0), Var(1)]),
+        Expr::from_str("0 & 1"));
+    assert_eq!(Or(vec![And(vec![Var(0), Var(1)]), Var(2)]),
+        Expr::from_str("0 & 1 | 2"));
+    assert_eq!(Or(vec![Var(0), And(vec![Var(1), Var(2)])]),
+        Expr::from_str("0 | 1 & 2"));
+    assert_eq!(Not(Box::new(Not(Box::new(Var(0))))),
+        Expr::from_str("!!0"));
+    }
+@
+
+
+\section{Evaluation}
+
+We implement the naive evaluation strategy for two reasons.
+First, due to its simplicity and ease of implementation,
+it can act as a reliable oracle to ensure that the conversion
+to CNF retains the semantics of the original expression.
+Second, we wil want to use it as a benchmark reference.
+
+<<expression methods>>=
+fn eval(&self, env: &Env) -> bool {
+    match *self {
+        Expr::Var(c) => env.lookup(c),
+        Expr::And(ref exprs) => exprs.iter().all(|expr| expr.eval(env)),
+        Expr::Or(ref exprs) => exprs.iter().any(|expr| expr.eval(env)),
+        Expr::Not(ref subexpr) => !subexpr.eval(env)
+    }
+}
+@
+
+
+\section{Environments}
+
+An environment is a mapping between variables and values.
+In \emph{rtb-boolean}, the environment is a bid request:
+the fields are the variable names with their associated values.
+(Technically, not all the fields of a bid request are variables
+since only some of them are actually exposed to the user.
+See [[variables_definition/0]].
+
+
+Like before, we can simplify our prototype by having only
+two values, \emph{true} and \emph{false}.  Our environment
+is internally represented by a hash table mapping a \emph{usize}
+to a \emph{bool}.
+
+
+<<type definitions>>=
+struct Env(HashMap<usize, bool>);
+
+impl Env {
+    <<environment methods>>
+}
+@
+
+We define two methods for our environment:
+[[new]] to create an empty environment, and
+[[lookup]] to find the value associated with a variable.
+The [[lookup]] method panics if the variable doesn't exist.
+
+<<environment methods>>=
+fn new() -> Env {
+    Env(HashMap::new())
+}
+
+fn lookup(&self, c: usize) -> bool {
+    *self.0.get(&c).expect("undeclared variable")
+}
+@
+
+
+\section{Conversion to CNF}
+
+We finally get to the point we were waiting for, converting
+an expression into CNF form.  We work from the explanations found
+on Professor Jason Eisner website at the following address:
+\url{https://www.cs.jhu.edu/~jason/tutorials/convert-to-CNF.html}
+
+Thanks to Rust's pattern matching, we can follow the instructions
+from Prof. Eisner quite easily.  We have the overall (and rather
+
+<<expression methods>>=
+fn to_cnf(&self) -> CNFExpr {
+    match *self {
+        Expr::Var(n) => { <<convert var to cnf>> }
+        Expr::Not(ref subexpr) => { <<convert not to cnf>> }
+        _ => CNFExpr(vec![])
+    }
+}
+@
+
+\subsection{Converting a variable}
+
+To convert an [[Expr::Var]] into a [[CNFExpr]],
+we have to wrap the variable in a clause, and
+the clause in a CNF expression.
+
+<<convert var to cnf>>=
+CNFExpr(vec![
+    CNFClause(vec![
+        CNFLiteral::Var(n)
+    ])
+])
+@
+
+\subsection{Converting a \emph{not} expression}
+
+Given a \emph{not} expression $\varphi$,
+we convert it to CNF by following the
+steps detailed below (reproduced from Prof. Eisner):
+
+\begin{itemize}
+\item[] If $\varphi$ has the form $\neg(...)$, then:
+  \begin{itemize}
+  \item If $\varphi$ has the form $\neg{A}$ for some variable $A$, then return $\varphi$.
+  \item If $\varphi$ has the form $\neg(\neg P)$, then return $CONVERT(P)$. (double negation)
+  \item If $\varphi$ has the form $\neg(P \wedge Q)$, then return $CONVERT(\neg P \vee \neg Q)$. (de Morgan's Law)
+  \item If $\varphi$ has the form $\neg(P \vee Q)$, then return $CONVERT(\neg P \wedge \neg Q)$. (de Morgan's Law)
+  \end{itemize}
+\end{itemize}
+
+<<convert not to cnf>>=
+match **subexpr {
+    Expr::Var(n) => CNFExpr::not(n),
+    Expr::Not(ref subexpr2) => subexpr2.to_cnf(),
+    Expr::And(ref subexprs) => {
+        let de_morganed = subexprs
+            .iter()
+            .map(|x| Expr::Not(Box::new(x.clone())))
+            .collect::<Vec<Expr>>();
+        Expr::Or(de_morganed).to_cnf()
+    }
+    Expr::Or(ref subexprs) => {
+        let de_morganed = subexprs
+            .iter()
+            .map(|x| Expr::Not(Box::new(x.clone())))
+            .collect::<Vec<Expr>>();
+        Expr::And(de_morganed).to_cnf()
+    }
+}
+@
+
+The main difference between the instructions and our code
+is that the instructions expect conjunction and disjunction
+to be done on only two sub-expressions at a time.  We adapt
+the instructions to support our vectors of sub-expressions.
+
+In the head of the match expression, [[subexpr]] is dereferenced
+twice: once for the borrow, once for the box.
+
+<<unit tests>>=
+#[test]
+fn test_convert_not_simple() {
+    use super::{CNFExpr, Expr};
+    assert_eq!(CNFExpr::var(0), Expr::from_str("0").to_cnf());
+    assert_eq!(CNFExpr::not(0), Expr::from_str("!0").to_cnf());
+    assert_eq!(CNFExpr::var(0), Expr::from_str("!!0").to_cnf());
+}
+@
+
+
+
+\section{Putting it all together}
+
+<<cnf.rs>>=
+use std::collections::HashMap;
+use std::fmt;
+use std::io;
+use std::io::Write;
+<<type definitions>>
+<<parse functions>>
+<<functions>>
+#[cfg(test)]
+mod test {
+    use Env;
+    fn make_env(bools: &[usize]) -> Env {
+        let mut e = Env::new();
+        for (i, b) in bools.iter().enumerate() {
+            e.0.insert(i, if *b == 0 { false } else { true });
+        }
+        return e;
+    }
+
+    <<unit tests>>
+}
+
+#[cfg(not(test))]
+fn main() {
+}
+
+@
+
+\section{Erlang}
+
+In this section we define an Erlang module
+with a number of utility functions from
+reading the flights from a [[.bert]] file,
+extracting the expressions, parsing them,
+replacing the literals with variables, etc.
+
+<<cnf.erl>>=
+-module(cnf).
+
+-include_lib("rtb_boolean/include/rtb_boolean.hrl").
+
+-compile(export_all).
+
+read_flights(PathName) ->
+    {ok, Bin} = file:read_file(PathName),
+    [{flights, Entries} | _] = binary_to_term(Bin),
+    [Fields || {_Id, Fields} <- Entries].
+
+extract_expressions(Flights) ->
+    [element(2, lists:keyfind(boolean_expression, 1, Flight))
+    || Flight <- Flights].
+
+parse(Expressions) ->
+    lists:map(
+        fun(E) ->
+            {ok, Tokens, _} = rtb_boolean_lexer:string(binary_to_list(E)),
+            {ok, Ast} = rtb_boolean_parser:parse(Tokens),
+            Ast
+        end,
+        Expressions).
+
+deliteralize_asts(Asts) ->
+    lists:foldl(fun(Ast, {AccAsts, Map, Next}) ->
+        {Ast2, Map2, Next2} = deliteralize(Ast, Map, Next),
+        {[Ast2 | AccAsts], Map2, Next2}
+    end, {[], #{}, 0}, Asts).
+
+deliteralize_list(Exprs, Map, Next) ->
+    lists:foldl(fun(Expr, {AccExprs, M, N}) ->
+        {Expr2, M2, N2} = deliteralize(Expr, M, N),
+        {[Expr2 | AccExprs], maps:merge(M, M2), N2}
+    end, {[], Map, Next}, Exprs).
+
+deliteralize({ast_and, Exprs}, Map, Next) ->
+    {Exprs2, Map2, Next2} = deliteralize_list(Exprs, Map, Next),
+    {{ast_and, Exprs2}, Map2, Next2};
+
+deliteralize({ast_or, Exprs}, Map, Next) ->
+    {Exprs2, Map2, Next2} = deliteralize_list(Exprs, Map, Next),
+    {{ast_or, Exprs2}, Map2, Next2};
+
+deliteralize({ast_not, Expr}, Map, Next) ->
+    {Expr2, Map2, Next2} = deliteralize(Expr, Map, Next),
+    {{ast_not, Expr2}, Map2, Next2};
+
+deliteralize(AstNode, Map, Next) ->
+    case maps:find(AstNode, Map) of
+        {ok, {VarNode, Count}} ->
+            Map2 = maps:put(AstNode, {VarNode, Count+1}, Map),
+            {VarNode, Map2, Next};
+        error ->
+            VarNode = {ast_variable, undefined, integer_to_list(Next)},
+            Map2 = maps:put(AstNode, {VarNode, 1}, Map),
+            {VarNode, Map2, Next + 1}
+    end.
+
+intersperse([], _) -> [];
+intersperse([X], _) -> [X];
+intersperse([X, Y | Rest], Sep) -> [X, Sep | intersperse([Y | Rest], Sep)].
+
+pp({ast_and, Exprs}) ->
+    [$(, intersperse(lists:map(fun pp/1, Exprs), " & "), $)];
+pp({ast_or, Exprs}) ->
+    [$(, intersperse(lists:map(fun pp/1, Exprs), " | "), $)];
+pp({ast_not, Expr}) ->
+    [$!, $(, pp(Expr), $)];
+pp({ast_variable, _, N}) ->
+    N.
+
+
+dump(DeliteralizedAsts, Path) ->
+    {ok, Fd} = file:open(Path, [write]),
+    lists:foreach(fun(Ast) ->
+        file:write(Fd, pp(Ast)),
+        file:write(Fd, "\n")
+    end, DeliteralizedAsts),
+    file:close(Fd).
+
+@
+
+
+\begin{appendices}
+
+\section{}
+
+In this appendix, we list all the unit tests that were used
+to ensure that the program worked as expected.
+
+<<unit tests>>=
+<<expression evaluation tests>>
+@
+
+
+<<expression evaluation tests>>=
+#[test]
+fn test_eval() {
+    use Expr::*;
+    let e1 = And(vec![Var(0), Var(1), Var(2)]);
+    assert_eq!(false, e1.eval(&make_env(&vec![0, 0, 0])));
+    assert_eq!(false, e1.eval(&make_env(&vec![0, 0, 1])));
+    assert_eq!(false, e1.eval(&make_env(&vec![0, 1, 0])));
+    assert_eq!(false, e1.eval(&make_env(&vec![0, 1, 1])));
+    assert_eq!(false, e1.eval(&make_env(&vec![1, 0, 0])));
+    assert_eq!(false, e1.eval(&make_env(&vec![1, 0, 1])));
+    assert_eq!(false, e1.eval(&make_env(&vec![1, 1, 0])));
+    assert_eq!(true , e1.eval(&make_env(&vec![1, 1, 1])));
+
+    let e2 = Or(vec![Var(0), Var(1), Var(2)]);
+    assert_eq!(false, e2.eval(&make_env(&vec![0, 0, 0])));
+    assert_eq!(true , e2.eval(&make_env(&vec![0, 0, 1])));
+    assert_eq!(true , e2.eval(&make_env(&vec![0, 1, 0])));
+    assert_eq!(true , e2.eval(&make_env(&vec![0, 1, 1])));
+    assert_eq!(true , e2.eval(&make_env(&vec![1, 0, 0])));
+    assert_eq!(true , e2.eval(&make_env(&vec![1, 0, 1])));
+    assert_eq!(true , e2.eval(&make_env(&vec![1, 1, 0])));
+    assert_eq!(true , e2.eval(&make_env(&vec![1, 1, 1])));
+}
+@
+
+
+\end{appendices}
+
+\end{document}

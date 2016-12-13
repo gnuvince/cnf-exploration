@@ -1,0 +1,15 @@
+# Latex generated
+*.tex
+*.aux
+*.pdf
+*.log
+*.out
+
+# Rust generated
+*.rs
+cnf
+
+# Erlang
+*.erl
+*.beam
+*.bert
