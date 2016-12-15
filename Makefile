@@ -21,6 +21,7 @@ cnf.erl: cnf.nw
 
 clean:
 	rm -f *.tex *.pdf *.out *.log *.nav *.aux
-	rm -f cnf cnf.rs
+	rm -f cnf.erl cnf.beam
+	rm -f cnf cnf_test cnf.rs
 
 .PHONY: all clean
