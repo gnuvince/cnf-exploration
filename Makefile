@@ -1,4 +1,4 @@
-all: cnf.pdf cnf.erl cnf cnf_test
+all: cnf.pdf cnf.erl cargo
 
 cnf.pdf: cnf.tex
 	pdflatex $<
@@ -7,14 +7,9 @@ cnf.pdf: cnf.tex
 cnf.tex: cnf.nw
 	noweave -index -delay $< > $@
 
-cnf_test: cnf.rs
-	rustc -O --test $< -o $@
-
-cnf: cnf.rs
-	rustc -O $< -o $@
-
-cnf.rs: cnf.nw
-	notangle -R"cnf.rs" $< > $@
+cargo: cnf.nw
+	notangle -R"cnf.rs" $< > cnf/src/main.rs
+	cargo build --release --manifest-path cnf/Cargo.toml
 
 cnf.erl: cnf.nw
 	notangle -R"cnf.erl" $< > $@
@@ -22,6 +17,5 @@ cnf.erl: cnf.nw
 clean:
 	rm -f *.tex *.pdf *.out *.log *.nav *.aux
 	rm -f cnf.erl cnf.beam
-	rm -f cnf cnf_test cnf.rs
 
-.PHONY: all clean
+.PHONY: all clean cargo

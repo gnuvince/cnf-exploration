@@ -7,7 +7,6 @@
 
 # Rust generated
 *.rs
-cnf
 
 # Erlang
 *.erl
