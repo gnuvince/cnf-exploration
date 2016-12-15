@@ -1,4 +1,4 @@
-all: cnf.pdf cnf.erl cnf
+all: cnf.pdf cnf.erl cnf cnf_test
 
 cnf.pdf: cnf.tex
 	pdflatex $<
@@ -7,8 +7,11 @@ cnf.pdf: cnf.tex
 cnf.tex: cnf.nw
 	noweave -index -delay $< > $@
 
+cnf_test: cnf.rs
+	rustc -O --test $< -o $@
+
 cnf: cnf.rs
-	rustc --test $<
+	rustc -O $< -o $@
 
 cnf.rs: cnf.nw
 	notangle -R"cnf.rs" $< > $@
