@@ -103,7 +103,7 @@ If during the evaluation of \exprref{eq:expr1} we find that $X = false$,
 then we don't need to evaluate any clause of \exprref{eq:expr2}.
 This means that the sub-expressions $F$, $G$, and $H$ will never
 need to be evaluated.  We hope that skipping clauses in this
-way will yield an appreciable speed-up over a
+way will yield an appreciable speed-up over the naïve approach.
 
 \begin{align}
     X \wedge (A \vee B) \wedge C        \label{eq:expr1} \\
@@ -157,20 +157,21 @@ impl Expr {
 \subsection{CNF Expressions}
 
 Let us also define data structures for CNF expressions.
-The [[Expr]] enum defined above could be used,
-but it does not enforce that an expression be in conjunctive-normal form.
+The [[Expr]] enum defined above could be used to represent
+a CNF expression, but it does not enforce that an expression
+be in conjunctive-normal form.
 By defining a type for CNF expressions, CNF clauses, and
 literals, we can make sure that it is impossible to even
-construct an expression that is not CNF.
+construct an expression that is not in CNF.
 
 <<type definitions>>=
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 struct CNFExpr(Vec<CNFClause>);
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 struct CNFClause(Vec<CNFLiteral>);
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 enum CNFLiteral {
     Var(usize),
     Not(Box<CNFLiteral>)
@@ -208,27 +209,28 @@ with all the extra boxes and vectors.
 
 <<functions>>=
 impl fmt::Display for Expr {
+    #[allow(unused_must_use)]
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             Expr::Var(n) => { write!(f, "{}", n) }
             Expr::Not(ref sub) => { write!(f, "!{}", sub) }
             Expr::And(ref subs) => {
                 let mut first = true;
-                let _ = write!(f, "(");
+                write!(f, "(");
                 for sub in subs {
-                    if !first { let _ = write!(f, " & "); }
+                    if !first { write!(f, " & "); }
                     first = false;
-                    let _ = write!(f, "{}", sub);
+                    write!(f, "{}", sub);
                 }
                 write!(f, ")")
             }
             Expr::Or(ref subs) => {
                 let mut first = true;
-                let _ = write!(f, "(");
+                write!(f, "(");
                 for sub in subs {
-                    if !first { let _ = write!(f, " | "); }
+                    if !first { write!(f, " | "); }
                     first = false;
-                    let _ = write!(f, "{}", sub);
+                    write!(f, "{}", sub);
                 }
                 write!(f, ")")
             }
@@ -252,13 +254,14 @@ fn test_expr_display() {
 
 <<functions>>=
 impl fmt::Display for CNFExpr {
+    #[allow(unused_must_use)]
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if self.0.len() == 0 { write!(f, "") }
         else if self.0.len() == 1 { write!(f, "{}", self.0[0]) }
         else {
             let mut first = true;
             for clause in &self.0 {
-                if !first { let _ = write!(f, " & "); }
+                if !first { write!(f, " & "); }
                 write!(f, "{}", clause);
                 first = false;
             }
@@ -268,6 +271,7 @@ impl fmt::Display for CNFExpr {
 }
 
 impl fmt::Display for CNFClause {
+    #[allow(unused_must_use)]
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if self.0.len() == 0 { write!(f, "") }
         else if self.0.len() == 1 { write!(f, "{}", self.0[0]) }
@@ -275,7 +279,7 @@ impl fmt::Display for CNFClause {
             write!(f, "(");
             let mut first = true;
             for clause in &self.0 {
-                if !first { let _ = write!(f, " | "); }
+                if !first { write!(f, " | "); }
                 write!(f, "{}", clause);
                 first = false;
             }
@@ -285,6 +289,7 @@ impl fmt::Display for CNFClause {
 }
 
 impl fmt::Display for CNFLiteral {
+    #[allow(unused_must_use)]
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             CNFLiteral::Var(n) => write!(f, "{}", n),
@@ -316,7 +321,7 @@ an expression or a CNF expression.  The size is
 the number of variables used in the expression.  This is a useful
 metric as some of the conversion to CNF can create
 duplicates of some variables. (This is especially
-true inthe handling of the \emph{or} operator.)
+true in the handling of the \emph{or} operator.)
 
 <<expression methods>>=
 fn size(&self) -> usize {
@@ -345,13 +350,13 @@ fn test_size() {
 
 <<cnf methods>>=
 impl CNFExpr {
-    fn len(&self) -> usize {
-        self.0.iter().map(|clause| clause.len()).sum()
+    fn size(&self) -> usize {
+        self.0.iter().map(|clause| clause.size()).sum()
     }
 }
 
 impl CNFClause {
-    fn len(&self) -> usize {
+    fn size(&self) -> usize {
         self.0.len()
     }
 }
@@ -593,11 +598,12 @@ fn test_from_str() {
 
 \section{Evaluation}
 
-We implement the naive evaluation strategy for two reasons.
-First, due to its simplicity and ease of implementation,
-it can act as a reliable oracle to ensure that the conversion
-to CNF retains the semantics of the original expression.
-Second, we wil want to use it as a benchmark reference.
+In this section we implement the method [[eval]]
+for both [[Expr]] and [[CNFExpr]] given an
+environment (i.e., a mapping between a variable
+identifier and a true/false value).
+
+\subsection{Expressions}
 
 <<expression methods>>=
 fn eval(&self, env: &Env) -> bool {
@@ -610,15 +616,39 @@ fn eval(&self, env: &Env) -> bool {
 }
 @
 
+\subsection{CNF Expressions}
 
-\section{Environments}
+<<cnf methods>>=
+impl CNFExpr {
+    fn eval(&self, env: &Env) -> bool {
+        self.0.iter().all(|clause| clause.eval(env))
+    }
+}
+
+impl CNFClause {
+    fn eval(&self, env: &Env) -> bool {
+        self.0.iter().any(|literal| literal.eval(env))
+    }
+}
+
+impl CNFLiteral {
+    fn eval(&self, env: &Env) -> bool {
+        match *self {
+            CNFLiteral::Var(n) => env.lookup(n),
+            CNFLiteral::Not(ref sublit) => !sublit.eval(env)
+        }
+    }
+}
+@
+
+\subsection{Environments}
 
 An environment is a mapping between variables and values.
 In \emph{rtb-boolean}, the environment is a bid request:
 the fields are the variable names with their associated values.
 (Technically, not all the fields of a bid request are variables
 since only some of them are actually exposed to the user.
-See [[variables_definition/0]].
+See [[variables_definition/0]]).
 
 
 Like before, we can simplify our prototype by having only
@@ -629,10 +659,6 @@ to a \emph{bool}.
 
 <<type definitions>>=
 struct Env(HashMap<usize, bool>);
-
-impl Env {
-    <<environment methods>>
-}
 @
 
 We define two methods for our environment:
@@ -640,13 +666,15 @@ We define two methods for our environment:
 [[lookup]] to find the value associated with a variable.
 The [[lookup]] method panics if the variable doesn't exist.
 
-<<environment methods>>=
-fn new() -> Env {
-    Env(HashMap::new())
-}
+<<type definitions>>=
+impl Env {
+    fn new() -> Env {
+        Env(HashMap::new())
+    }
 
-fn lookup(&self, c: usize) -> bool {
-    *self.0.get(&c).expect("undeclared variable")
+    fn lookup(&self, c: usize) -> bool {
+        *self.0.get(&c).expect("undeclared variable")
+    }
 }
 @
 
@@ -659,30 +687,17 @@ on Professor Jason Eisner website at the following address:
 \url{https://www.cs.jhu.edu/~jason/tutorials/convert-to-CNF.html}
 
 Thanks to Rust's pattern matching, we can follow the instructions
-from Prof. Eisner quite easily.  We have the overall (and rather
+from Prof. Eisner quite easily.
 
 <<expression methods>>=
 fn to_cnf(&self) -> CNFExpr {
     match *self {
-        Expr::Var(n) => { <<convert var to cnf>> }
+        Expr::Var(n) => { CNFExpr::var(n) }
         Expr::Not(ref subexpr) => { <<convert not to cnf>> }
-        _ => CNFExpr(vec![])
+        Expr::And(ref subexprs) => { <<convert and to cnf>> }
+        Expr::Or(ref subexprs) => { <<convert or to cnf>> }
     }
 }
-@
-
-\subsection{Converting a variable}
-
-To convert an [[Expr::Var]] into a [[CNFExpr]],
-we have to wrap the variable in a clause, and
-the clause in a CNF expression.
-
-<<convert var to cnf>>=
-CNFExpr(vec![
-    CNFClause(vec![
-        CNFLiteral::Var(n)
-    ])
-])
 @
 
 \subsection{Converting a \emph{not} expression}
@@ -740,36 +755,199 @@ fn test_convert_not_simple() {
 }
 @
 
+\subsection{Converting an \emph{and} expression}
+
+To convert an \emph{and} expression to CNF, we
+convert each sub-expression to CNF and then
+concatenate their clauses into one big CNFExpr.
+
+<<convert and to cnf>>=
+let mut cnf_clauses = Vec::new();
+for subexpr in subexprs {
+    let subexpr_cnf = subexpr.to_cnf();
+    for clause in subexpr_cnf.0 {
+        cnf_clauses.push(clause)
+    }
+}
+CNFExpr(cnf_clauses)
+@
+
+\subsection{Converting an \emph{or} expression}
+
+Converting an \emph{or} expression to CNF
+is the ``big bad'': it has the potential
+to make our expression grow exponentially!
+We'll implement the naïve approach, and
+we'll revisit later if this turns out to
+be too much of a problem.
+
+Since there's a number of loops involved
+in the process and that I easily lose track
+of where I am at any given time, I'll split
+the work into a bunch of chunks that I'll
+stich together at the end.
+
+Per Prof. Eisner, if our initial expression
+$\varphi$ has the form $P \vee Q$, then
+$CONVERT(P)$ must have the form
+$P_1 \wedge ... \wedge P_m$,
+and $CONVERT(Q)$ must have the form
+$Q_1 \wedge ... \wedge Q_n$.
+In our case, the disjunction can have
+more than two sub-expressions, but the
+principle still holds.
+
+Let's first convert every sub-expression to CNF.
+After the conversion is done, we store the
+clauses of each CNF sub-expression inside a vector.
+
+<<convert or sub-expressions to cnf>>=
+let mut cnf_clauses: Vec<Vec<CNFClause>> = Vec::new();
+for subexpr in subexprs {
+    let subexpr_cnf = subexpr.to_cnf();
+    cnf_clauses.push(subexpr_cnf.0)
+}
+@
+
+Now we have to create a [[CNFExpr]] between
+each pair of clauses.  For instance, if we
+have the following vector of clauses:
+
+\begin{verbatim}
+[ [C1, C2], [C3, C4, C5], [C6] ]
+\end{verbatim}
+
+We need to create the following conjunction:
+
+\begin{verbatim}
+    (C1 or C3) and (C1 or C4) and (C1 or C5) and (C1 or C6)
+and (C2 or C3) and (C2 or C4) and (C2 or C5) and (C2 or C6)
+and (C3 or C6) and (C4 or C6) and (C5 or C6)
+\end{verbatim}
+
+<<create large conjunction>>=
+let mut new_clauses = Vec::new();
+for c1 in 0 .. cnf_clauses.len() {
+    for i in 0 .. cnf_clauses[c1].len() {
+        for c2 in c1+1 .. cnf_clauses.len() {
+            for j in 0 .. cnf_clauses[c2].len() {
+                let p = cnf_clauses[c1][i].clone();
+                let q = cnf_clauses[c2][j].clone();
+                let mut combined: Vec<CNFLiteral> = Vec::new();
+                combined.extend(p.0);
+                combined.extend(q.0);
+                new_clauses.push(CNFClause(combined));
+            }
+        }
+    }
+}
+CNFExpr(new_clauses)
+@
+
+
+<<convert or to cnf>>=
+<<convert or sub-expressions to cnf>>
+<<create large conjunction>>
+@
+
+
+\section{Experiments}
+
+In this section, we will define a number of
+experiments that can be run on a stream of
+expressions.  The results should be useful
+to determine if the approach is viable.
+
+Each experiment is a function that will
+consume its input from [[stdin]] and output
+its results on [[stdout]].
+
+\subsection{Parsing and conversion}
+
+Let's first make sure that we can properly
+parse expressions and convert them to
+conjunctive normal form.  We read each
+line, parse it into an [[Expr]], and convert
+to a [[CNFExpr]].  We let the program
+panic if there is an error, and if we parsed
+everything successfully we silently exit.
+
+<<functions>>=
+fn exp_parse_and_convert() {
+    let stdin = io::stdin();
+    let mut buf = String::new();
+
+    while stdin.read_line(&mut buf).unwrap() > 0 {
+        let expr = Expr::from_str(&buf);
+        expr.to_cnf();
+        buf.clear();
+    }
+}
+@
+
+\subsection{Size difference}
+
+Converting from a regular expression to
+a CNF expression can cause the number of
+variable references to grow exponentially.
+
+This experiment creates a distribution map:
+the difference in the number of variables in
+an expression and its CNF conversion is tallied
+and the totals are displayed at the end.
+
+<<functions>>=
+fn exp_size_diff() {
+    let stdin = io::stdin();
+    let mut buf = String::new();
+    let mut tallies: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut total_count: usize = 0;
+
+    while stdin.read_line(&mut buf).unwrap() > 0 {
+        let expr = Expr::from_str(&buf);
+        let cnf = expr.to_cnf();
+        let diff = cnf.size() - expr.size();
+        let tally = tallies.entry(diff).or_insert(0);
+        *tally += 1;
+        total_count += 1;
+        buf.clear();
+    }
+
+    for (k, v) in tallies {
+        println!("{} {} ({:.2}%)", k, v, (v as f64 / total_count as f64) * 100.0);
+    }
+}
+@
 
 
 \section{Putting it all together}
 
 <<cnf.rs>>=
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::io;
-use std::io::Write;
+use std::env;
+use std::process;
 <<type definitions>>
 <<parse functions>>
 <<functions>>
-#[cfg(test)]
-mod test {
-    use Env;
-    fn make_env(bools: &[usize]) -> Env {
-        let mut e = Env::new();
-        for (i, b) in bools.iter().enumerate() {
-            e.0.insert(i, if *b == 0 { false } else { true });
-        }
-        return e;
-    }
-
-    <<unit tests>>
-}
-
 #[cfg(not(test))]
 fn main() {
+    let args = env::args().collect::<Vec<String>>();
+    if args.len() == 1 {
+        usage();
+    }
+    if args[1] == "parse" {
+        exp_parse_and_convert();
+    } else if args[1] == "diff" {
+        exp_size_diff();
+    }
 }
 
+fn usage() -> ! {
+    println!("usage: cnf <parse | diff>");
+    process::exit(1);
+}
 @
 
 \section{Erlang}
@@ -871,6 +1049,23 @@ dump(DeliteralizedAsts, Path) ->
 
 In this appendix, we list all the unit tests that were used
 to ensure that the program worked as expected.
+
+<<cnf.rs>>=
+#[cfg(test)]
+mod test {
+    use Env;
+    fn make_env(bools: &[usize]) -> Env {
+        let mut e = Env::new();
+        for (i, b) in bools.iter().enumerate() {
+            e.0.insert(i, if *b == 0 { false } else { true });
+        }
+        return e;
+    }
+
+    <<unit tests>>
+}
+@
+
 
 <<unit tests>>=
 <<expression evaluation tests>>
