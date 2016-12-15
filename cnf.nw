@@ -658,6 +658,7 @@ to a \emph{bool}.
 
 
 <<type definitions>>=
+#[derive(Debug)]
 struct Env(HashMap<usize, bool>);
 @
 
@@ -675,6 +676,8 @@ impl Env {
     fn lookup(&self, c: usize) -> bool {
         *self.0.get(&c).expect("undeclared variable")
     }
+
+
 }
 @
 
@@ -919,18 +922,115 @@ fn exp_size_diff() {
 }
 @
 
+\subsection{Evaluation (correctness)}
+
+Though we followed precise rules and the type
+checker accepts our [[to_cnf]] method, we
+have no guarantee that the new expression
+computes the same function as the old one.
+
+In this sub-section, we will create an
+experiment that will give us greater confidence
+that the conversion isn't buggy.
+We will convert an expression to its CNF form
+and evaluate both under many randomly generated environments.
+
+If there is a discrepancy between the results,
+we know that there is a bug in our implementation.
+
+If there is no discrepancy between the results,
+there may still be a bug, but at least we can
+feel more confident in our implementation.
+
+\paragraph{Environment generation}
+We first need to create random environments.
+We shall proceed in two steps:
+(1) we'll find all the variable ids used in an expression,
+(2) we will insert them in an environment with a random boolean value.
+
+<<expression methods>>=
+fn vars(&self, vars: &mut HashSet<usize>) {
+    match *self {
+        Expr::Var(n) => { vars.insert(n); }
+        Expr::Not(ref sub) => { sub.vars(vars); }
+        Expr::Or(ref subs)
+        | Expr::And(ref subs) => {
+            for sub in subs {
+                sub.vars(vars);
+            }
+        }
+    }
+}
+@
+
+<<type definitions>>=
+impl Env {
+    fn random(vars: &HashSet<usize>) -> Env {
+        let mut rng = rand::thread_rng();
+        let mut h = HashMap::new();
+        for var in vars {
+            h.insert(*var, rng.gen::<bool>());
+        }
+        return Env(h);
+    }
+}
+@
+
+With our helper functionality in place,
+all that's left to do is throw a lot of
+environments at the expressions and
+hope they evaluate to the same value.
+
+<<functions>>=
+fn exp_eval_correctness() {
+    let stdin = io::stdin();
+    let mut buf = String::new();
+    let mut line = 1;
+
+    while stdin.read_line(&mut buf).unwrap() > 0 {
+        let expr = Expr::from_str(&buf);
+        let cnf = expr.to_cnf();
+
+        let mut vars = HashSet::new();
+        expr.vars(&mut vars);
+        for _ in 0 .. EVAL_ITER {
+            let env = Env::random(&vars);
+            let v1 = expr.eval(&env);
+            let v2 = cnf.eval(&env);
+            if v1 != v2 {
+                println!("Error (line {}): {:?}", line, env);
+                return;
+            }
+        }
+
+        buf.clear();
+        line += 1;
+    }
+}
+@
+
+
+
 
 \section{Putting it all together}
 
 <<cnf.rs>>=
-use std::collections::{BTreeMap, HashMap};
+extern crate rand;
+
+use std::collections::{HashSet, BTreeMap, HashMap};
 use std::fmt;
 use std::io;
 use std::env;
 use std::process;
+
+use rand::Rng;
+
+const EVAL_ITER: usize = 10_000;
+
 <<type definitions>>
 <<parse functions>>
 <<functions>>
+
 #[cfg(not(test))]
 fn main() {
     let args = env::args().collect::<Vec<String>>();
@@ -941,11 +1041,13 @@ fn main() {
         exp_parse_and_convert();
     } else if args[1] == "diff" {
         exp_size_diff();
+    } else if args[1] == "eval" {
+        exp_eval_correctness();
     }
 }
 
 fn usage() -> ! {
-    println!("usage: cnf <parse | diff>");
+    println!("usage: cnf <parse | diff | eval>");
     process::exit(1);
 }
 @
