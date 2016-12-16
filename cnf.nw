@@ -662,8 +662,9 @@ to a \emph{bool}.
 struct Env(HashMap<usize, bool>);
 @
 
-We define two methods for our environment:
-[[new]] to create an empty environment, and
+We define three methods for our environment:
+[[new]] to create an empty environment,
+[[insert]] to add a new binding, and
 [[lookup]] to find the value associated with a variable.
 The [[lookup]] method panics if the variable doesn't exist.
 
@@ -673,11 +674,13 @@ impl Env {
         Env(HashMap::new())
     }
 
+    fn insert(&mut self, var: usize, val: bool) {
+        self.0.insert(var, val);
+    }
+
     fn lookup(&self, c: usize) -> bool {
         *self.0.get(&c).expect("undeclared variable")
     }
-
-
 }
 @
 
@@ -867,13 +870,11 @@ its results on [[stdout]].
 
 \subsection{Parsing and conversion}
 
-Let's first make sure that we can properly
-parse expressions and convert them to
-conjunctive normal form.  We read each
-line, parse it into an [[Expr]], and convert
-to a [[CNFExpr]].  We let the program
-panic if there is an error, and if we parsed
-everything successfully we silently exit.
+Let's first make sure that we can properly parse expressions and
+convert them to conjunctive normal form.  We read a line, parse it
+into an [[Expr]], and convert to a [[CNFExpr]].  We let the program
+panic if there is an error, and if we parsed everything successfully
+we silently exit.
 
 <<functions>>=
 fn exp_parse_and_convert() {
@@ -898,6 +899,11 @@ This experiment creates a distribution map:
 the difference in the number of variables in
 an expression and its CNF conversion is tallied
 and the totals are displayed at the end.
+
+We use a [[BTreeMap]] to record the tallies
+because it is more convenient than a [[HashMap]]:
+a [[BTreeMap]] iterates over its keys in order
+and so it's easier to read the results.
 
 <<functions>>=
 fn exp_size_diff() {
@@ -929,17 +935,19 @@ checker accepts our [[to_cnf]] method, we
 have no guarantee that the new expression
 computes the same function as the old one.
 
-In this sub-section, we will create an
-experiment that will give us greater confidence
+In this sub-section, we create an
+experiment to give us greater confidence
 that the conversion isn't buggy.
-We will convert an expression to its CNF form
-and evaluate both under many randomly generated environments.
+We convert an expression to its CNF form
+and evaluate both with many randomly generated environments.
 
 If there is a discrepancy between the results,
 we know that there is a bug in our implementation.
+If that happens, we output the line number of
+the culprit and the environment that caused the error.
 
 If there is no discrepancy between the results,
-there may still be a bug, but at least we can
+there may still be a bug in the code, but at least we can
 feel more confident in our implementation.
 
 \paragraph{Environment generation}
@@ -967,15 +975,16 @@ fn vars(&self, vars: &mut HashSet<usize>) {
 impl Env {
     fn random(vars: &HashSet<usize>) -> Env {
         let mut rng = rand::thread_rng();
-        let mut h = HashMap::new();
+        let mut env = Env::new();
         for var in vars {
-            h.insert(*var, rng.gen::<bool>());
+            env.insert(*var, rng.gen::<bool>());
         }
-        return Env(h);
+        return env;
     }
 }
 @
 
+\paragraph{Simulation}
 With our helper functionality in place,
 all that's left to do is throw a lot of
 environments at the expressions and
@@ -1010,6 +1019,163 @@ fn exp_eval_correctness() {
 @
 
 
+\subsection{Evaluation (speed)}
+
+After asserting that raw expressions and their CNF versions evaluate
+to the same result, we want to know about the difference in evaluation
+speed.
+
+\subsubsection{Histogram}
+
+Before we write the code to do the speed measurements, let's think about
+how we want to display the results of those measurements.  A histogram
+seems ideal given the large number of expressions in our set.
+The histogram will help give us a general idea by telling us
+how many ratios between the time to evaluate the original expression and
+the time to evaluate the CNF expression fall between 0\% and 10\%,
+between 10\% and 20\%, etc.
+
+Let's create a [[Histogram]] structure for this purpose.
+
+<<type definitions>>=
+struct Histogram {
+    num_windows: usize,
+    buckets: Vec<usize>
+}
+
+impl Histogram {
+    <<histogram methods>>
+}
+@
+
+The [[num_windows]] field controls how many buckets the
+histogram contains, and thus the range of each bucket.
+For example, if [[num_window]] is 2, there will be three
+buckets: one for ratios in the range $[0, 0.5[$, one for
+ratios in the range $[0.5, 1.0[$, and one for $[1.0, +\infty[$.
+The tally of ratios for each range window is contained
+in the vector [[buckets]].
+
+\paragraph{Creating a histogram}
+To create a histogram, the user invokes the [[new]]
+method, specifying the number of windows he wants.
+
+<<histogram methods>>=
+fn new(num_windows: usize) -> Histogram {
+    Histogram {
+        num_windows: num_windows,
+        buckets: iter::repeat(0).take(num_windows + 1).collect()
+    }
+}
+@
+
+\paragraph{Tallying}
+We tally a ratio by computing which bucket the parameter belongs to
+and increasing that bucket by one.
+
+The formula to determine the appropriate bucket for a ratio $r$ is as follows:
+
+\[
+bucket(r) = min\left( \lfloor{r \cdot \text{[[num_windows]]}}\rfloor,
+\text{[[num_windows]]} \right)
+\]
+
+<<histogram methods>>=
+fn tally(&mut self, r: f64) {
+    let x = (r * self.num_windows as f64) as usize;
+    let idx = cmp::min(x, self.num_windows);
+    self.buckets[idx] += 1;
+}
+@
+
+\paragraph{Unit tests}
+Let's test our [[Histogram]] by create a simple one and
+performing a few manual tallies.
+
+<<unit tests>>=
+#[test]
+fn test_histogram() {
+    use super::Histogram;
+    let mut h = Histogram::new(4);
+    h.tally(0.1);
+    h.tally(0.3);
+    h.tally(0.6);
+    h.tally(0.9);
+    h.tally(1.2);
+    assert_eq!(1, h.buckets[0]);
+    assert_eq!(1, h.buckets[1]);
+    assert_eq!(1, h.buckets[2]);
+    assert_eq!(1, h.buckets[3]);
+    assert_eq!(1, h.buckets[4]);
+}
+@
+
+\paragraph{Printing}
+We'll finish our [[Histogram]] struct by writing a
+method to print the results to stdout.
+
+<<histogram methods>>=
+fn display(&self) {
+    let slice = 1.0 / (self.num_windows as f64);
+    for i in 0 .. self.num_windows {
+        println!("{:.2} .. {:.2} : {}",
+            slice * (i as f64),
+            slice * ((i+1) as f64),
+            self.buckets[i]);
+    }
+    println!("1.00 .. +inf : {}", self.buckets[self.num_windows]);
+}
+@
+
+\subsubsection{Benchmarking}
+
+With our [[Histogram]] struct in place, we are ready to
+take our time measurements.  We will use Rust's [[Instant]]
+struct for that purpose.
+
+We will evaluate each expression [[EVAL_ITER]] times, and tally the
+ratio between the time taken by the vanilla expression over the
+time taken by the CNF expression.
+
+<<functions>>=
+fn exp_eval_speed() {
+    let stdin = io::stdin();
+    let mut buf = String::new();
+    let mut h = Histogram::new(10);
+
+    while stdin.read_line(&mut buf).unwrap() > 0 {
+        let expr = Expr::from_str(&buf);
+        let cnf = expr.to_cnf();
+        let mut vars = HashSet::new();
+        expr.vars(&mut vars);
+        let mut vanilla_time = 0;
+        let mut cnf_time = 0;
+
+        for _ in 0 .. EVAL_ITER {
+            let env = Env::random(&vars);
+            let now = Instant::now();
+            expr.eval(&env);
+            let elapsed = now.elapsed();
+            vanilla_time += elapsed.as_secs() + (elapsed.subsec_nanos() as u64);
+
+            let now = Instant::now();
+            cnf.eval(&env);
+            let elapsed = now.elapsed();
+            cnf_time += elapsed.as_secs() + (elapsed.subsec_nanos() as u64);
+
+        }
+
+        //let ratio = (vanilla_time as f64) / (cnf_time as f64);
+        let ratio = (cnf_time as f64) / (vanilla_time as f64);
+        h.tally(ratio);
+
+        buf.clear();
+    }
+
+    h.display();
+}
+@
+
 
 
 \section{Putting it all together}
@@ -1017,11 +1183,14 @@ fn exp_eval_correctness() {
 <<cnf.rs>>=
 extern crate rand;
 
+use std::cmp;
 use std::collections::{HashSet, BTreeMap, HashMap};
+use std::env;
 use std::fmt;
 use std::io;
-use std::env;
+use std::iter;
 use std::process;
+use std::time::{Instant};
 
 use rand::Rng;
 
@@ -1043,11 +1212,13 @@ fn main() {
         exp_size_diff();
     } else if args[1] == "eval" {
         exp_eval_correctness();
+    } else if args[1] == "bench" {
+        exp_eval_speed();
     }
 }
 
 fn usage() -> ! {
-    println!("usage: cnf <parse | diff | eval>");
+    println!("usage: cnf <parse | diff | eval | bench>");
     process::exit(1);
 }
 @
