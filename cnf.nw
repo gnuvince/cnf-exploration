@@ -1405,19 +1405,52 @@ parse(Expressions) ->
             Ast
         end,
         Expressions).
+@
 
+\subsection{Deliteralizing}
+To pass the flights' expressions to our
+Rust program, we need to transform the
+ASTs into the simpler format we defined
+in \autoref{sec:expressions}.  To do this,
+we explore the ASTs, we retain the
+\emph{and}, \emph{or}, and \emph{not} nodes,
+and convert all the other expressions
+into numeric variables.
+
+\paragraph{Deliteralizing multiple ASTs}
+Our first function, [[deliteralize_asts/1]],
+accepts a list of boolean expressions ASTs
+and invokes the [[deliteralize/3]] function
+on each one of them.
+
+The variable [[ExprToVar]] maps boolean expressions
+to pairs.  The first element of a pair is the variable node
+(as defined in the boolean language) to replace the
+expression with, and the second element is how many
+times that expression occurs in all the ASTs.
+The variable [[NextId]] is the value of the variable
+that the next expression is going to take on.
+
+<<erlang functions>>=
 deliteralize_asts(Asts) ->
-    lists:foldl(fun(Ast, {AccAsts, Map, Next}) ->
-        {Ast2, Map2, Next2} = deliteralize(Ast, Map, Next),
-        {[Ast2 | AccAsts], Map2, Next2}
+    lists:foldl(fun(Ast, {AccAsts, ExprToVar, Next}) ->
+        {DelitAst, ExprToVar2, NextId2} = deliteralize(Ast, ExprToVar, NextId),
+        {[DelitAst | AccAsts], ExprToVar2, NextId2}
     end, {[], #{}, 0}, Asts).
+@
 
-deliteralize_list(Exprs, Map, Next) ->
-    lists:foldl(fun(Expr, {AccExprs, M, N}) ->
-        {Expr2, M2, N2} = deliteralize(Expr, M, N),
-        {[Expr2 | AccExprs], maps:merge(M, M2), N2}
-    end, {[], Map, Next}, Exprs).
 
+\paragraph{Deliteralizing an AST}
+To deliteralize an \emph{and} or \emph{or}
+node, we deliteralize their sub-expressions;
+to deliteralize a \emph{not} node, we
+deliteralize its sub-expression.
+In both cases, the deliteralization will
+return an updated expression-to-identifier
+map and the value the next identifier should
+have.
+
+<<erlang functions>>=
 deliteralize({ast_and, Exprs}, Map, Next) ->
     {Exprs2, Map2, Next2} = deliteralize_list(Exprs, Map, Next),
     {{ast_and, Exprs2}, Map2, Next2};
@@ -1429,7 +1462,19 @@ deliteralize({ast_or, Exprs}, Map, Next) ->
 deliteralize({ast_not, Expr}, Map, Next) ->
     {Expr2, Map2, Next2} = deliteralize(Expr, Map, Next),
     {{ast_not, Expr2}, Map2, Next2};
+@
 
+To deliteralize any other node,
+we check if we've already seen
+this expression before.  If
+it's the case, we increment the
+number of time it's been translated.
+If we've never seen this expression
+before, we create a new variable node,
+set its count to 1 and increment the
+[[NextId]] value.
+
+<<erlang functions>>=
 deliteralize(AstNode, Map, Next) ->
     case maps:find(AstNode, Map) of
         {ok, {VarNode, Count}} ->
@@ -1440,6 +1485,26 @@ deliteralize(AstNode, Map, Next) ->
             Map2 = maps:put(AstNode, {VarNode, 1}, Map),
             {VarNode, Map2, Next + 1}
     end.
+@
+
+
+<<erlang functions>>=
+deliteralize_list(Exprs, Map, Next) ->
+    lists:foldl(fun(Expr, {AccExprs, M, N}) ->
+        {Expr2, M2, N2} = deliteralize(Expr, M, N),
+        {[Expr2 | AccExprs], maps:merge(M, M2), N2}
+    end, {[], Map, Next}, Exprs).
+@
+
+
+<<cnf.erl>>=
+-module(cnf).
+
+-include_lib("rtb_boolean/include/rtb_boolean.hrl").
+
+-compile(export_all).
+
+<<erlang functions>>
 
 intersperse([], _) -> [];
 intersperse([X], _) -> [X];
