@@ -1121,14 +1121,18 @@ method to print the results to stdout.
 
 <<histogram methods>>=
 fn display(&self) {
+    let total: f64 = self.buckets.iter().sum::<usize>() as f64;
     let slice = 1.0 / (self.num_windows as f64);
     for i in 0 .. self.num_windows {
-        println!("{:.2} .. {:.2} : {}",
+        println!("{:.2} .. {:.2} : {} ({:.2})",
             slice * (i as f64),
             slice * ((i+1) as f64),
-            self.buckets[i]);
+            self.buckets[i],
+            self.buckets[i] as f64 / total);
     }
-    println!("1.00 .. +inf : {}", self.buckets[self.num_windows]);
+    println!("1.00 .. +inf : {} ({:.2})",
+        self.buckets[self.num_windows],
+        self.buckets[self.num_windows] as f64 / total);
 }
 @
 
@@ -1289,7 +1293,7 @@ Here is the outline of this new strategy:
 extern crate rand;
 
 use std::cmp;
-use std::collections::{HashSet, BTreeMap, HashMap};
+use std::collections::{BinaryHeap, HashSet, BTreeMap, HashMap};
 use std::env;
 use std::fmt;
 use std::io;
