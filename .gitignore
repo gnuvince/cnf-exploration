@@ -12,3 +12,4 @@
 *.erl
 *.beam
 *.bert
+cnf/target
