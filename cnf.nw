@@ -515,8 +515,8 @@ Again, thanks to the simplicity of the language, and also
 because we don't need to create something very maintainable
 or fast, we can use simple techniques to create our parser.
 Our strategy is simple: non-terminals in the grammar are
-functions, when a rule refers to a non-terminal we do a
-function call, and when it refers to a terminal, we use
+functions; when a rule refers to a non-terminal we do a
+function call; when a rule refers to a terminal, we use
 [[peek]] to ensure that the correct token follows and
 then use [[eat]] to move to the next item.
 
