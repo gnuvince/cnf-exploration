@@ -130,6 +130,7 @@ In this section, we define the data structure to represent
 boolean expressions.
 
 \subsection{Expressions}
+\label{sec:expressions}
 
 We first define expressions that are \textbf{not} expected to be in
 conjunctive-normal form: they represent the expressions as written by
@@ -177,7 +178,7 @@ struct CNFClause(Vec<CNFLiteral>);
 #[derive(Debug, PartialEq, Clone)]
 enum CNFLiteral {
     Var(usize),
-    Not(Box<CNFLiteral>)
+    Not(usize)
 }
 
 <<cnf methods>>
@@ -197,8 +198,7 @@ impl CNFExpr {
     }
 
     fn not(n: usize) -> CNFExpr {
-        CNFExpr(vec![CNFClause(vec![
-            CNFLiteral::Not(Box::new(CNFLiteral::Var(n)))])])
+        CNFExpr(vec![CNFClause(vec![CNFLiteral::Not(n)])])
     }
 }
 @
@@ -302,7 +302,7 @@ impl fmt::Display for CNFLiteral {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             CNFLiteral::Var(n) => write!(f, "{}", n),
-            CNFLiteral::Not(ref inner) => write!(f, "!{}", inner)
+            CNFLiteral::Not(n) => write!(f, "!{}", n)
         }
     }
 }
@@ -313,18 +313,19 @@ impl fmt::Display for CNFLiteral {
 fn test_cnf_display() {
     use super::{CNFExpr, CNFClause, CNFLiteral};
     assert_eq!("", format!("{}", CNFExpr(vec!())));
-    assert_eq!("0", format!("{}",
-        CNFExpr(vec!(CNFClause(vec!(CNFLiteral::Var(0)))))));
+    assert_eq!("0", format!("{}", CNFExpr::var(0)));
+    assert_eq!("!0", format!("{}", CNFExpr::not(0)));
     assert_eq!("(0 | 1)", format!("{}",
         CNFExpr(vec!(CNFClause(vec!(CNFLiteral::Var(0),
                                     CNFLiteral::Var(1)))))));
     assert_eq!("(0 | 1) & !2", format!("{}",
         CNFExpr(vec!(CNFClause(vec!(CNFLiteral::Var(0),
                                     CNFLiteral::Var(1))),
-                     CNFClause(vec!(CNFLiteral::Not(Box::new(CNFLiteral::Var(2)))))))));
+                     CNFClause(vec!(CNFLiteral::Not(2)))))));
 }
 @
 
+\paragraph{Expression size}
 Next, we implement a method to return the size of
 an expression or a CNF expression.  The size is
 the number of variables used in the expression.  This is a useful
@@ -652,7 +653,7 @@ impl CNFLiteral {
     fn eval(&self, env: &Env) -> bool {
         match *self {
             CNFLiteral::Var(n) => env.lookup(n),
-            CNFLiteral::Not(ref sublit) => !sublit.eval(env)
+            CNFLiteral::Not(n) => !env.lookup(n)
         }
     }
 }
@@ -744,19 +745,22 @@ match **subexpr {
     Expr::Var(n) => CNFExpr::not(n),
     Expr::Not(ref subexpr2) => subexpr2.to_cnf(),
     Expr::And(ref subexprs) => {
-        let de_morganed = subexprs
-            .iter()
-            .map(|x| Expr::Not(Box::new(x.clone())))
-            .collect::<Vec<Expr>>();
+        let de_morganed = de_morgan(subexprs);
         Expr::Or(de_morganed).to_cnf()
     }
     Expr::Or(ref subexprs) => {
-        let de_morganed = subexprs
-            .iter()
-            .map(|x| Expr::Not(Box::new(x.clone())))
-            .collect::<Vec<Expr>>();
+        let de_morganed = de_morgan(subexprs);
         Expr::And(de_morganed).to_cnf()
     }
+}
+@
+
+<<functions>>=
+fn de_morgan(exprs: &[Expr]) -> Vec<Expr> {
+    exprs
+        .iter()
+        .map(|x| Expr::Not(Box::new(x.clone())))
+        .collect::<Vec<Expr>>()
 }
 @
 
