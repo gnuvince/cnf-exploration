@@ -1198,6 +1198,106 @@ fn exp_eval_speed() {
 }
 @
 
+\subsection{Evaluating all expressions (Strategy 1)}
+
+The previous section gave us a sense of how much
+time evaluating the individual expressions took.
+Let's now explore the case that is closer to
+\emph{rtb-boolean}'s purpose, finding the list
+of expressions that match a given environment.
+
+We'll first start with an implementation that
+matches the algorithm described in [[<<find matches naively>>]]:
+evaluate each expression one after the other
+without attempting to leverage the commonalities
+that they may share.
+
+<<functions>>=
+fn read_exprs() -> Vec<Expr> {
+    let mut exprs = Vec::new();
+    let stdin = io::stdin();
+    let mut buf = String::new();
+    while stdin.read_line(&mut buf).unwrap() > 0 {
+        let expr = Expr::from_str(&buf);
+        exprs.push(expr);
+        buf.clear();
+    }
+    return exprs;
+}
+@
+
+<<functions>>=
+fn naive_match_exprs(exprs: &[Expr], env: &Env) -> usize {
+    let mut matches = 0;
+    for expr in exprs.iter() {
+        if expr.eval(env) {
+            matches += 1;
+        }
+    }
+    return matches;
+}
+@
+
+<<functions>>=
+fn naive_match_cnf(cnf_exprs: &[CNFExpr], env: &Env) -> usize {
+    let mut matches = 0;
+    for cnf_expr in cnf_exprs.iter() {
+        if cnf_expr.eval(env) {
+            matches += 1;
+        }
+    }
+    return matches;
+}
+@
+
+<<functions>>=
+fn exp_match_1() {
+    let mut h = Histogram::new(10);
+    let exprs = read_exprs();
+    let cnf_exprs = exprs.iter().map(|expr| expr.to_cnf())
+        .collect::<Vec<CNFExpr>>();
+
+    let mut all_vars = HashSet::new();
+    for expr in exprs.iter() {
+        expr.vars(&mut all_vars);
+    }
+
+    for _ in 0 .. EVAL_ITER {
+        let env = Env::random(&all_vars);
+
+        let now = Instant::now();
+        let expr_matches = naive_match_exprs(&exprs, &env);
+        let elapsed = now.elapsed();
+        let expr_time = elapsed.as_secs() + (elapsed.subsec_nanos() as u64);
+
+        let now = Instant::now();
+        let cnf_matches = naive_match_cnf(&cnf_exprs, &env);
+        let elapsed = now.elapsed();
+        let cnf_time = elapsed.as_secs() + (elapsed.subsec_nanos() as u64);
+
+        assert_eq!(expr_matches, cnf_matches);
+        h.tally(cnf_time as f64 / expr_time as f64);
+    }
+    h.display();
+}
+@
+
+\subsection{Evaluating all expressions (Strategy 2)}
+
+Having done the simple matching, let's try to use
+the regularity of the conjunctive normal form to
+try and evaluate fewer clauses and expressions.
+
+Here is the outline of this new strategy:
+\begin{enumerate}
+\item find the unevaluated clause used in the most expressions;
+\item evaluate the clause;
+\item if the evaluation succeeds, goto 1;
+\item if the evaluation fails, perform the following steps:
+    \begin{enumerate}
+    \item
+    \end{enumerate}
+\end{enumerate}
 
 
 \section{Putting it all together}
@@ -1236,11 +1336,15 @@ fn main() {
         exp_eval_correctness();
     } else if args[1] == "bench" {
         exp_eval_speed();
+    } else if args[1] == "match1" {
+        exp_match_1();
+    } else {
+        usage();
     }
 }
 
 fn usage() -> ! {
-    println!("usage: cnf <parse | diff | eval | bench>");
+    println!("usage: cnf <parse | diff | eval | bench | match1>");
     process::exit(1);
 }
 @
