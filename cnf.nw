@@ -904,6 +904,41 @@ fn exp_parse_and_convert() {
 }
 @
 
+
+\subsection{Counting common expressions}
+
+A key assumption for our improved match strategy
+is that some expressions occur in many different
+expressions.  This experiment gives us the 20
+most used variables (all corresponding to an
+sub-expression) and in how many expressions
+the variable occurs.
+
+<<functions>>=
+fn count_common_expressions() {
+    let exprs = read_exprs();
+    let mut vars = HashSet::new();
+    let mut tallies = BTreeMap::new();
+    let n = exprs.len();
+
+    for expr in exprs.iter() {
+        expr.vars(&mut vars);
+        for v in vars.iter() {
+            let tally = tallies.entry(*v).or_insert(0);
+            *tally += 1;
+        }
+        vars.clear();
+    }
+
+    let mut entries: Vec<(&usize, &usize)> = tallies.iter().collect();
+    entries.sort_by(|&(_, a), &(_, b)| Ord::cmp(b, a));
+    for &(var, count) in entries.iter().take(20) {
+        println!("{:5} : {} ({:.2}%)", var, count, (100.0 * *count as f64 / n as f64));
+    }
+}
+@
+
+
 \subsection{Size difference}
 
 Converting from a regular expression to
@@ -1293,6 +1328,7 @@ Here is the outline of this new strategy:
 extern crate rand;
 
 use std::cmp;
+use std::cmp::Ord;
 use std::collections::{BinaryHeap, HashSet, BTreeMap, HashMap};
 use std::env;
 use std::fmt;
@@ -1317,6 +1353,8 @@ fn main() {
     }
     if args[1] == "parse" {
         exp_parse_and_convert();
+    } else if args[1] == "count" {
+        count_common_expressions();
     } else if args[1] == "diff" {
         exp_size_diff();
     } else if args[1] == "eval" {
@@ -1331,7 +1369,7 @@ fn main() {
 }
 
 fn usage() -> ! {
-    println!("usage: cnf <parse | diff | eval | bench | match1>");
+    println!("usage: cnf <parse | count | diff | eval | bench | match1>");
     process::exit(1);
 }
 @
