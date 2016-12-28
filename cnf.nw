@@ -1352,27 +1352,51 @@ fn usage() -> ! {
 \section{Erlang}
 
 In this section we define an Erlang module
-with a number of utility functions from
+with a number of utility functions for
 reading the flights from a [[.bert]] file,
 extracting the expressions, parsing them,
 replacing the literals with variables, etc.
 
-<<cnf.erl>>=
--module(cnf).
+\paragraph{Reading Flights}
+Erlang's standard library provides a pair
+of functions, [[file:read_file/1]] and
+[[binary_to_term/1]], that are useful for
+reading in a [[.bert]] file.
 
--include_lib("rtb_boolean/include/rtb_boolean.hrl").
+We perform extra processing to extract the
+actual flights, and leave out the more
+``meta data'' such as the name of the bert
+table and the indices of the flights.
 
--compile(export_all).
-
+<<erlang functions>>=
 read_flights(PathName) ->
     {ok, Bin} = file:read_file(PathName),
     [{flights, Entries} | _] = binary_to_term(Bin),
     [Fields || {_Id, Fields} <- Entries].
+@
 
+\paragraph{Extracting expressions}
+Flights have many fields, but the only one
+we are really interested in for this study
+is the \emph{boolean\_expression} field.
+The following function accepts the output
+of [[read_flights/1]] and returns a list
+of binaries.
+
+<<erlang functions>>=
 extract_expressions(Flights) ->
     [element(2, lists:keyfind(boolean_expression, 1, Flight))
     || Flight <- Flights].
+@
 
+
+\paragraph{Parsing expressions}
+The [[parse/1]] function is pretty
+straight-forward: take all the
+binaries returned by [[extract_expressions/1]]
+and lex and parse them.
+
+<<erlang functions>>=
 parse(Expressions) ->
     lists:map(
         fun(E) ->
