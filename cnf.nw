@@ -808,12 +808,6 @@ We'll implement the naïve approach, and
 we'll revisit later if this turns out to
 be too much of a problem.
 
-Since there's a number of loops involved
-in the process and that I easily lose track
-of where I am at any given time, I'll split
-the work into a bunch of chunks that I'll
-stich together at the end.
-
 Per Prof. Eisner, if our initial expression
 $\varphi$ has the form $P \vee Q$, then
 $CONVERT(P)$ must have the form
