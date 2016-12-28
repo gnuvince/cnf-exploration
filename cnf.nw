@@ -43,7 +43,7 @@ we'll concentrate on flights.}%
 
 The current evaluation strategy is simple:
 for every flight, we evaluate its associated boolean expression using
-the fields and values from a bid request.
+the fields and values from the incoming bid request.
 If the evaluation succeeds, we record the flight's id in a list of matches.
 This strategy is captured in [[<<find matches naively>>]].
 In addition to its simplicity, an advantage of this technique
@@ -62,7 +62,7 @@ fn find_matches(bid_request, flights):
 
 The main weakness of this approach is that it considers expressions in
 isolation; it does not try to exploit the shared environment (the bid
-request) nor the fact that many flights may share common clauses.
+request) nor the fact that many flights may share common sub-expressions.
 
 To address this weakness, we reformulate the boolean expressions into
 CNF and exploit that structure to perform fewer evaluations.
@@ -74,7 +74,7 @@ a conjunction of clauses.  A clause is a disjunction
 of literals, and a literal is either a variable or
 the negation of a literal.
 
-In the examples below, \exprref{eq:cnf} is CNF
+In the examples below, \exprref{eq:cnf} is in CNF
 because it has three clauses joined by conjuctions, and
 none of the clauses uses the conjunctive operator.
 \exprref{eq:not-cnf-1} uses conjunction in one of
@@ -94,13 +94,15 @@ and therefore it is not in CNF.
 \subsection{CNF-aware matching}
 
 If the boolean expressions are in conjunctive-normal form,
-we can improve our matching strategy:
-if a clause $C$ fails (i.e., evaluates to false),
-we can discard all the expressions that involve $C$,
+we can improve our matching strategy.
+The failure of a single clause causes the entire expression
+to fail as well;
+if a clause $X$ fails (i.e., evaluates to false) in an expression,
+we can discard all the subsequent expressions that have $X$ as one of their clause,
 because we know they will all fail too.
 
 In the example below, the expressions share the clause $X$.
-If during the evaluation of \exprref{eq:expr1} we find that $X = false$,
+If during the evaluation of \exprref{eq:expr1} we find that $X = \text{\it false}$,
 then we don't need to evaluate any clause of \exprref{eq:expr2}.
 This means that the sub-expressions $F$, $G$, and $H$ will never
 need to be evaluated.  We hope that skipping clauses in this
@@ -181,10 +183,12 @@ enum CNFLiteral {
 <<cnf methods>>
 @
 
-Constructing a CNF Expression structure by hand isn't hard,
-but it's certainly verbose.  In the next chunk, we'll introduce
-a few constructors to make code that creates CNF expressions
-(such as tests and CNF conversion) shorter.
+\paragraph{Simple constructors}
+Creating a CNF Expression structure by hand isn't hard,
+but it's certainly verbose.  In the next chunk, we introduce
+two constructors that are going to simplify some down the line:
+[[var]] to create a CNF expression of a single variable, and
+[[not]] to create the negation of a single variable.
 
 <<cnf methods>>=
 impl CNFExpr {
@@ -204,9 +208,13 @@ impl CNFExpr {
 In this subsection we'll implement a number of utility methods
 on expressions and CNF expressions.
 
+\paragraph{Display}
 Our first order of business is to provide a way to print expressions;
 the default format of [[Debug]] quickly gets unreadble
-with all the extra boxes and vectors.
+with all the extra boxes and vectors.  We implement the [[Display]]
+trait for expressions and for CNF expressions.  We also
+deactivate the warnings that are triggered by not using the
+result of the [[write!]] macro.
 
 <<functions>>=
 impl fmt::Display for Expr {
@@ -606,6 +614,12 @@ identifier and a true/false value).
 
 \subsection{Expressions}
 
+Evaluation of an [[Expr]] should be entirely
+unsurprising: we perform a depth-first search,
+evaluating the variables to their associated
+value in [[env]] and applying the logical operators
+to their sub-expressions.
+
 <<expression methods>>=
 fn eval(&self, env: &Env) -> bool {
     match *self {
@@ -618,6 +632,8 @@ fn eval(&self, env: &Env) -> bool {
 @
 
 \subsection{CNF Expressions}
+
+The evaluation of CNF expressions is similarly simple.
 
 <<cnf methods>>=
 impl CNFExpr {
@@ -931,10 +947,11 @@ fn exp_size_diff() {
 
 \subsection{Evaluation (correctness)}
 
-Though we followed precise rules and the type
-checker accepts our [[to_cnf]] method, we
-have no guarantee that the new expression
-computes the same function as the old one.
+The Rust type checker accepts [[to_cnf]],
+meaning tht we produce an expression that
+is truly in CNF form.  However, this
+doesn't mean that the construction retains
+the semantics of the original expression.
 
 In this sub-section, we create an
 experiment to give us greater confidence
