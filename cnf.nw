@@ -922,19 +922,16 @@ and so it's easier to read the results.
 
 <<functions>>=
 fn exp_size_diff() {
-    let stdin = io::stdin();
-    let mut buf = String::new();
+    let exprs = read_exprs();
     let mut tallies: BTreeMap<usize, usize> = BTreeMap::new();
     let mut total_count: usize = 0;
 
-    while stdin.read_line(&mut buf).unwrap() > 0 {
-        let expr = Expr::from_str(&buf);
-        let cnf = expr.to_cnf();
-        let diff = cnf.size() - expr.size();
+    for expr in exprs.iter() {
+        let cnf_expr = expr.to_cnf();
+        let diff = cnf_expr.size() - expr.size();
         let tally = tallies.entry(diff).or_insert(0);
         *tally += 1;
         total_count += 1;
-        buf.clear();
     }
 
     for (k, v) in tallies {
@@ -1008,28 +1005,20 @@ hope they evaluate to the same value.
 
 <<functions>>=
 fn exp_eval_correctness() {
-    let stdin = io::stdin();
-    let mut buf = String::new();
-    let mut line = 1;
-
-    while stdin.read_line(&mut buf).unwrap() > 0 {
-        let expr = Expr::from_str(&buf);
-        let cnf = expr.to_cnf();
-
+    let exprs = read_exprs();
+    for (line, expr) in exprs.iter().enumerate() {
+        let cnf_expr = expr.to_cnf();
         let mut vars = HashSet::new();
         expr.vars(&mut vars);
         for _ in 0 .. EVAL_ITER {
             let env = Env::random(&vars);
             let v1 = expr.eval(&env);
-            let v2 = cnf.eval(&env);
+            let v2 = cnf_expr.eval(&env);
             if v1 != v2 {
                 println!("Error (line {}): {:?}", line, env);
                 return;
             }
         }
-
-        buf.clear();
-        line += 1;
     }
 }
 @
