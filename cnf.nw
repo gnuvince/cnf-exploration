@@ -897,6 +897,110 @@ Each experiment is a function that will
 consume its input from [[stdin]] and output
 its results on [[stdout]].
 
+\subsection{Histogram}
+
+Given the large number of expressions in our
+input set, the results of many experiments will
+best be expressed as a histogram.  In this
+section, we'll implement a simple histogram
+data structure.
+
+<<type definitions>>=
+struct Histogram {
+    num_windows: usize,
+    buckets: Vec<usize>
+}
+
+impl Histogram {
+    <<histogram methods>>
+}
+@
+
+The [[num_windows]] field controls how many buckets the
+histogram contains, and thus the range of each bucket.
+For example, if [[num_window]] is 2, there will be three
+buckets: one for ratios in the range $[0, 0.5[$, one for
+ratios in the range $[0.5, 1.0[$, and one for $[1.0, +\infty[$.
+The tally for each range window is contained
+in the vector [[buckets]].
+
+\paragraph{Creating a histogram}
+To create a histogram, the user invokes the [[new]]
+method, specifying the number of windows they want.
+
+<<histogram methods>>=
+fn new(num_windows: usize) -> Histogram {
+    Histogram {
+        num_windows: num_windows,
+        buckets: iter::repeat(0).take(num_windows + 1).collect()
+    }
+}
+@
+
+\paragraph{Tallying}
+We tally a ratio by computing which bucket the parameter belongs to
+and increasing that bucket by one.
+
+The formula to determine the appropriate bucket for a ratio $r$ is as follows:
+
+\[
+bucket(r) = min\left( \lfloor{r \cdot \text{[[num_windows]]}}\rfloor,
+\text{[[num_windows]]} \right)
+\]
+
+<<histogram methods>>=
+fn tally(&mut self, r: f64) {
+    let x = (r * self.num_windows as f64) as usize;
+    let idx = cmp::min(x, self.num_windows);
+    self.buckets[idx] += 1;
+}
+@
+
+\paragraph{Unit tests}
+Let's test our [[Histogram]] by create a simple one and
+performing a few manual tallies.
+
+<<unit tests>>=
+#[test]
+fn test_histogram() {
+    use super::Histogram;
+    let mut h = Histogram::new(4);
+    h.tally(0.1);
+    h.tally(0.3);
+    h.tally(0.6);
+    h.tally(0.9);
+    h.tally(1.2);
+    assert_eq!(1, h.buckets[0]);
+    assert_eq!(1, h.buckets[1]);
+    assert_eq!(1, h.buckets[2]);
+    assert_eq!(1, h.buckets[3]);
+    assert_eq!(1, h.buckets[4]);
+}
+@
+
+\paragraph{Printing}
+We'll finish our [[Histogram]] struct by writing a
+method to print the results to stdout.
+
+<<histogram methods>>=
+fn display(&self) {
+    let total: f64 = self.buckets.iter().sum::<usize>() as f64;
+    let slice = 1.0 / (self.num_windows as f64);
+    for i in 0 .. self.num_windows {
+        println!("{:.2} .. {:.2} : {} ({:.2})",
+            slice * (i as f64),
+            slice * ((i+1) as f64),
+            self.buckets[i],
+            self.buckets[i] as f64 / total);
+    }
+    println!("1.00 .. +inf : {} ({:.2})",
+        self.buckets[self.num_windows],
+        self.buckets[self.num_windows] as f64 / total);
+}
+@
+
+
+
 \subsection{Parsing and conversion}
 
 For our first experiment,
@@ -1080,130 +1184,17 @@ After asserting that raw expressions and their CNF versions evaluate
 to the same result, we want to know about the difference in evaluation
 speed.
 
-\subsubsection{Histogram}
-
-Before we write the code to do the speed measurements, let's think about
-how we want to display the results of those measurements.  A histogram
-seems ideal given the large number of expressions in our set.
-The histogram will help give us a general idea by telling us
-how many ratios between the time to evaluate the original expression and
-the time to evaluate the CNF expression fall between 0\% and 10\%,
-between 10\% and 20\%, etc.
-
-Let's create a [[Histogram]] structure for this purpose.
-
-<<type definitions>>=
-struct Histogram {
-    num_windows: usize,
-    buckets: Vec<usize>
-}
-
-impl Histogram {
-    <<histogram methods>>
-}
-@
-
-The [[num_windows]] field controls how many buckets the
-histogram contains, and thus the range of each bucket.
-For example, if [[num_window]] is 2, there will be three
-buckets: one for ratios in the range $[0, 0.5[$, one for
-ratios in the range $[0.5, 1.0[$, and one for $[1.0, +\infty[$.
-The tally of ratios for each range window is contained
-in the vector [[buckets]].
-
-\paragraph{Creating a histogram}
-To create a histogram, the user invokes the [[new]]
-method, specifying the number of windows he wants.
-
-<<histogram methods>>=
-fn new(num_windows: usize) -> Histogram {
-    Histogram {
-        num_windows: num_windows,
-        buckets: iter::repeat(0).take(num_windows + 1).collect()
-    }
-}
-@
-
-\paragraph{Tallying}
-We tally a ratio by computing which bucket the parameter belongs to
-and increasing that bucket by one.
-
-The formula to determine the appropriate bucket for a ratio $r$ is as follows:
-
-\[
-bucket(r) = min\left( \lfloor{r \cdot \text{[[num_windows]]}}\rfloor,
-\text{[[num_windows]]} \right)
-\]
-
-<<histogram methods>>=
-fn tally(&mut self, r: f64) {
-    let x = (r * self.num_windows as f64) as usize;
-    let idx = cmp::min(x, self.num_windows);
-    self.buckets[idx] += 1;
-}
-@
-
-\paragraph{Unit tests}
-Let's test our [[Histogram]] by create a simple one and
-performing a few manual tallies.
-
-<<unit tests>>=
-#[test]
-fn test_histogram() {
-    use super::Histogram;
-    let mut h = Histogram::new(4);
-    h.tally(0.1);
-    h.tally(0.3);
-    h.tally(0.6);
-    h.tally(0.9);
-    h.tally(1.2);
-    assert_eq!(1, h.buckets[0]);
-    assert_eq!(1, h.buckets[1]);
-    assert_eq!(1, h.buckets[2]);
-    assert_eq!(1, h.buckets[3]);
-    assert_eq!(1, h.buckets[4]);
-}
-@
-
-\paragraph{Printing}
-We'll finish our [[Histogram]] struct by writing a
-method to print the results to stdout.
-
-<<histogram methods>>=
-fn display(&self) {
-    let total: f64 = self.buckets.iter().sum::<usize>() as f64;
-    let slice = 1.0 / (self.num_windows as f64);
-    for i in 0 .. self.num_windows {
-        println!("{:.2} .. {:.2} : {} ({:.2})",
-            slice * (i as f64),
-            slice * ((i+1) as f64),
-            self.buckets[i],
-            self.buckets[i] as f64 / total);
-    }
-    println!("1.00 .. +inf : {} ({:.2})",
-        self.buckets[self.num_windows],
-        self.buckets[self.num_windows] as f64 / total);
-}
-@
-
 \subsubsection{Benchmarking}
 
-With our [[Histogram]] struct in place, we are ready to
-take our time measurements.  We will use Rust's [[Instant]]
-struct for that purpose.
-
 We will evaluate each expression [[EVAL_ITER]] times, and tally the
-ratio between the time taken by the vanilla expression over the
-time taken by the CNF expression.
+ratio between the time taken by the CNF expression over
+the time taken by the vanilla expression.
 
 <<functions>>=
 fn exp_eval_speed() {
-    let stdin = io::stdin();
-    let mut buf = String::new();
     let mut h = Histogram::new(10);
-
-    while stdin.read_line(&mut buf).unwrap() > 0 {
-        let expr = Expr::from_str(&buf);
+    let exprs = read_exprs();
+    for expr in exprs {
         let cnf = expr.to_cnf();
         let mut vars = HashSet::new();
         expr.vars(&mut vars);
