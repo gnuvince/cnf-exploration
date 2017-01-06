@@ -37,8 +37,9 @@ allows for an evaluation strategy that
 The core task of \emph{rtb-boolean} is to return a list of flight ids that
 match the parameters of a bid request%
 \footnote{Other objects such as products and usegments use the same
-infrastructure, but to make the language more concrete in this document,
-we'll concentrate on flights.}%
+infrastructure, but to make this document
+less verbose and more concrete,
+we'll specifically concentrate on flights.}%
 .
 
 The current evaluation strategy is simple:
@@ -48,30 +49,34 @@ If the evaluation succeeds, we record the flight's id in a list of matches.
 This strategy is captured in [[<<find matches naively>>]].
 In addition to its simplicity, an advantage of this technique
 is that it does not require that the
-boolean expressions have any specific structure; any combination
-of the operators ``AND'', ``OR'', and ``NOT'' is acceptable.
+boolean expressions have a specific structure; any combination
+of the operators \emph{and}, \emph{or}, and \emph{not} is acceptable.
 
 <<find matches naively>>=
 fn find_matches(bid_request, flights):
     matches := []
-    for i := 0 .. len(flights):
-        if eval(bid_request, flights[i].expr):
+    for i := 0 to len(flights) do
+        if eval(bid_request, flights[i].expr) then
             matches.add(i)
+    done
     return matches
 @
 
 The main weakness of this approach is that it considers expressions in
-isolation; it does not try to exploit the shared environment (the bid
-request) nor the fact that many flights may share common sub-expressions.
+isolation; it does not attempt to exploit the shared environment (the bid
+request) nor the fact that a sub-expression may be shared among
+multiple flights.
 
+% More vigorous
 To address this weakness, we reformulate the boolean expressions into
 CNF and exploit that structure to perform fewer evaluations.
 
 \subsection{Conjunctive-normal form}
 
 An expression is in conjunctive-normal form if it is
-a conjunction of clauses.  A clause is a disjunction
-of literals, and a literal is either a variable or
+a conjunction of clauses;
+a clause is a disjunction of literals;
+a literal is either a variable or
 the negation of a literal.
 
 In the examples below, \exprref{eq:cnf} is in CNF
@@ -94,24 +99,27 @@ and therefore it is not in CNF.
 \subsection{CNF-aware matching}
 
 If the boolean expressions are in conjunctive-normal form,
-we can improve our matching strategy.
-The failure of a single clause causes the entire expression
-to fail as well;
-if a clause $X$ fails (i.e., evaluates to false) in an expression,
-we can discard all the subsequent expressions that have $X$ as one of their clause,
-because we know they will all fail too.
+we can leverage their common structure to improve our matching strategy.
+We can evaluate an expression clause by clause:
+the failure of a single clause causes the entire expression to fail.
+In fact, if a clause $X$ fails, it causes \emph{all} expressions
+that contain $X$ to also fail.
 
-In the example below, the expressions share the clause $X$.
-If during the evaluation of \exprref{eq:expr1} we find that $X = \text{\it false}$,
-then we don't need to evaluate any clause of \exprref{eq:expr2}.
-This means that the sub-expressions $F$, $G$, and $H$ will never
-need to be evaluated.  We hope that skipping clauses in this
-way will yield an appreciable speed-up over the naïve approach.
+In the example below, the expressions share a clause, $X$.
+If during the evaluation of \exprref{eq:expr1}
+we find that $X = \text{\it false}$,
+then we don't need to evaluate any of the other clauses of \exprref{eq:expr1}.
+Also, because $X$ is a clause in \exprref{eq:expr2},
+the clauses $F \vee G$, and $\neg H$ will never
+need to be evaluated.
 
 \begin{align}
     X \wedge (A \vee B) \wedge C        \label{eq:expr1} \\
     (F \vee G) \wedge X \wedge \neg H   \label{eq:expr2}
 \end{align}
+
+We hope that skipping clauses in this
+way will yield an appreciable speed-up over the naïve approach.
 
 \subsection{Implementation}
 
@@ -138,10 +146,11 @@ users.  A later section will automate the conversion to CNF.
 
 To simplify the prototype, we intentionally gut the boolean language
 to only 4 constructs, which are described in the enum [[Expr]].
-In the complete implementation, we will also have boolean literals,
-numeric comparisons, list operations (\emph{all of}, \emph{not in}, etc.),
-and functions.  All these will be literals, which is why we allow
-ourselves only to have one node (\emph{Var}) as a representative
+In a complete implementation, we would also have numbers, strings,
+comparisons, list operations (\emph{all of}, \emph{not in}, etc.),
+and function calls.  All these operation would be leaves of the
+expression tree, and thus literals; this is why we allow
+ourselves only to have one node type (\emph{Var}) as a representative
 of literals.
 
 <<type definitions>>=
@@ -328,10 +337,13 @@ fn test_cnf_display() {
 \paragraph{Expression size}
 Next, we implement a method to return the size of
 an expression or a CNF expression.  The size is
-the number of variables used in the expression.  This is a useful
-metric as some of the conversion to CNF can create
-duplicates of some variables. (This is especially
-true in the handling of the \emph{or} operator.)
+the number of variables used in the expression.
+This is a useful metric to have:
+some of the conversion rules to CNF create
+duplicates of some variables (this is especially
+true in the handling of the \emph{or} operator),
+and the size of the CNF expression can be
+exponentially larger.
 
 <<expression methods>>=
 fn size(&self) -> usize {
@@ -380,6 +392,8 @@ Even simple expressions can become long and hard to understand
 if we only use the Rust syntax to read and write them.
 To alleviate this task, we create a small parser that can read
 expressions as strings and generate the equivalent [[Expr]] structure.
+This parser will also allow us to read expressions
+from disk.
 
 Thanks to the simplicity of [[Expr]], our grammar for the language
 is very simple.
@@ -452,7 +466,7 @@ fn scan(s: &str) -> Vec<Token> {
 @
 
 Here is a simple unit test for the scanner.  If this
-was a more important project, many more tests would
+was a more than a prototype project, many more tests would
 be required.
 
 <<unit tests>>=
@@ -468,7 +482,7 @@ fn test_scan() {
 
 \subsection{Parser}
 
-We do parsing with a simple predictive, recursive descent.
+We do parsing with a predictive, recursive descent.
 The structure [[ParserState]] will keep track of the current
 state of parsing: it has a list of tokens returned by [[scan]]
 from the previous section, and an index points to the current
@@ -885,7 +899,8 @@ its results on [[stdout]].
 
 \subsection{Parsing and conversion}
 
-Let's first make sure that we can properly parse expressions and
+For our first experiment,
+let's make sure that we can properly parse expressions and
 convert them to conjunctive normal form.  We read a line, parse it
 into an [[Expr]], and convert to a [[CNFExpr]].  We let the program
 panic if there is an error, and if we parsed everything successfully
