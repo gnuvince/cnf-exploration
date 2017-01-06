@@ -807,6 +807,7 @@ let mut cnf_clauses = Vec::new();
 for subexpr in subexprs {
     let subexpr_cnf = subexpr.to_cnf();
     for clause in subexpr_cnf.0 {
+        if cnf_clauses.contains(&clause) { continue; }
         cnf_clauses.push(clause)
     }
 }
@@ -846,18 +847,18 @@ for subexpr in subexprs {
 
 Now we have to create a [[CNFExpr]] between
 each pair of clauses.  For instance, if we
-have the following vector of clauses:
+following expression:
 
 \begin{verbatim}
-[ [C1, C2], [C3, C4, C5], [C6] ]
+(V1 & V2) | (V3 & V4 & V5) | V6
 \end{verbatim}
 
 We need to create the following conjunction:
 
 \begin{verbatim}
-    (C1 or C3) and (C1 or C4) and (C1 or C5) and (C1 or C6)
-and (C2 or C3) and (C2 or C4) and (C2 or C5) and (C2 or C6)
-and (C3 or C6) and (C4 or C6) and (C5 or C6)
+  (V1 | V3) & (V1 | V4) & (V1 | V5) & (V1 | V6)
+& (V2 | V3) & (V2 | V4) & (V2 | V5) & (V2 | V6)
+& (V3 | V6) & (V4 | V6) & (V5 | V6)
 \end{verbatim}
 
 <<create large conjunction>>=
@@ -871,7 +872,8 @@ for c1 in 0 .. cnf_clauses.len() {
                 let mut combined: Vec<CNFLiteral> = Vec::new();
                 combined.extend(p.0);
                 combined.extend(q.0);
-                new_clauses.push(CNFClause(combined));
+                let cl = CNFClause(combined);
+                new_clauses.push(cl);
             }
         }
     }
@@ -1605,6 +1607,7 @@ use std::cmp::Ord;
 use std::collections::{HashSet, BTreeMap, HashMap};
 use std::env;
 use std::fmt;
+use std::hash::Hash;
 use std::io;
 use std::iter;
 use std::process;
