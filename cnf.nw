@@ -178,13 +178,13 @@ literals, we can make sure that it is impossible to even
 construct an expression that is not in CNF.
 
 <<type definitions>>=
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialOrd, Ord, PartialEq, Eq, Hash, Clone)]
 struct CNFExpr(Vec<CNFClause>);
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialOrd, Ord, PartialEq, Eq, Hash, Clone)]
 struct CNFClause(Vec<CNFLiteral>);
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialOrd, Ord, PartialEq, Eq, Hash, Clone)]
 enum CNFLiteral {
     Var(usize),
     Not(usize)
@@ -1029,30 +1029,27 @@ fn exp_parse_and_convert() {
 A key assumption for our improved match strategy
 is that some expressions occur in many different
 expressions.  This experiment gives us the 20
-most used variables (all corresponding to an
-sub-expression) and in how many expressions
-the variable occurs.
+most used clauses and in how many expressions
+they occur.
 
 <<functions>>=
 fn count_common_expressions() {
     let exprs = read_exprs();
-    let mut vars = HashSet::new();
     let mut tallies = BTreeMap::new();
     let n = exprs.len();
 
     for expr in exprs.iter() {
-        expr.vars(&mut vars);
-        for v in vars.iter() {
-            let tally = tallies.entry(*v).or_insert(0);
+        let cnf_expr = expr.to_cnf();
+        for clause in cnf_expr.0 {
+            let tally = tallies.entry(clause).or_insert(0);
             *tally += 1;
         }
-        vars.clear();
     }
 
-    let mut entries: Vec<(&usize, &usize)> = tallies.iter().collect();
+    let mut entries: Vec<(&CNFClause, &usize)> = tallies.iter().collect();
     entries.sort_by(|&(_, a), &(_, b)| Ord::cmp(b, a));
-    for &(var, count) in entries.iter().take(20) {
-        println!("{:5} : {} ({:.2}%)", var, count, (100.0 * *count as f64 / n as f64));
+    for &(clause, count) in entries.iter().take(20) {
+        println!("{} : {} ({:.2}%)", clause, count, (100.0 * *count as f64 / n as f64));
     }
 }
 @
@@ -1064,32 +1061,52 @@ Converting from a regular expression to
 a CNF expression can cause the number of
 variable references to grow exponentially.
 
-This experiment creates a distribution map:
-the difference in the number of variables in
-an expression and its CNF conversion is tallied
-and the totals are displayed at the end.
-
-We use a [[BTreeMap]] to record the tallies
-because it is more convenient than a [[HashMap]]:
-a [[BTreeMap]] iterates over its keys in order
-and so it's easier to read the results.
+This experiments create a histogram comparing
+the size of the original expression and
+the size of its CNF conversion.
 
 <<functions>>=
 fn exp_size_diff() {
     let exprs = read_exprs();
-    let mut tallies: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut h = Histogram::new(10);
     let mut total_count: usize = 0;
 
     for expr in exprs.iter() {
         let cnf_expr = expr.to_cnf();
-        let diff = cnf_expr.size() - expr.size();
-        let tally = tallies.entry(diff).or_insert(0);
-        *tally += 1;
-        total_count += 1;
+        let ratio = expr.size() as f64 / cnf_expr.size() as f64;
+        h.tally(ratio);
     }
 
-    for (k, v) in tallies {
-        println!("{} {} ({:.2}%)", k, v, (v as f64 / total_count as f64) * 100.0);
+    h.display();
+}
+@
+
+\subsection{Detecting duplicate clauses}
+
+One issue that caused a match strategy to panic
+was the presence of duplicate clauses inside an
+expression, e.g., $X \wedge (Y \vee Z) \wedge X$.
+We do not want duplicates in our CNF expressions.
+This experiment displays the id of a CNF expression
+that has duplicate clauses and the duplicate clauses.
+
+
+<<functions>>=
+fn exp_duplicates() {
+    let exprs = read_exprs();
+    for (i, expr) in exprs.into_iter().enumerate() {
+        let mut dupes = Vec::new();
+        let cnf_expr = expr.to_cnf();
+        for j in 0 .. cnf_expr.0.len() {
+            for k in j+1 .. cnf_expr.0.len() {
+                if cnf_expr.0[j] == cnf_expr.0[k] {
+                    dupes.push(cnf_expr.0[j].clone());
+                }
+            }
+        }
+        if !dupes.is_empty() {
+            println!("{:4}: {:?}", i, dupes);
+        }
     }
 }
 @
@@ -1097,7 +1114,7 @@ fn exp_size_diff() {
 \subsection{Evaluation (correctness)}
 
 The Rust type checker accepts [[to_cnf]],
-meaning tht we produce an expression that
+meaning that we produce an expression that
 is truly in CNF form.  However, this
 doesn't mean that the construction retains
 the semantics of the original expression.
@@ -1160,6 +1177,7 @@ hope they evaluate to the same value.
 <<functions>>=
 fn exp_eval_correctness() {
     let exprs = read_exprs();
+    let mut eval_to_true = 0;
     for (line, expr) in exprs.iter().enumerate() {
         let cnf_expr = expr.to_cnf();
         let mut vars = HashSet::new();
@@ -1168,12 +1186,17 @@ fn exp_eval_correctness() {
             let env = Env::random(&vars);
             let v1 = expr.eval(&env);
             let v2 = cnf_expr.eval(&env);
+            if v1 { eval_to_true += 1; }
             if v1 != v2 {
                 println!("Error (line {}): {:?}", line, env);
                 return;
             }
         }
     }
+    let n = exprs.len() * EVAL_ITER;
+    println!("Evaluated to true: {}/{} ({:.2}%)",
+        eval_to_true, n,
+        eval_to_true as f64 / n as f64 * 100.0);
 }
 @
 
@@ -1215,13 +1238,9 @@ fn exp_eval_speed() {
 
         }
 
-        //let ratio = (vanilla_time as f64) / (cnf_time as f64);
         let ratio = (cnf_time as f64) / (vanilla_time as f64);
         h.tally(ratio);
-
-        buf.clear();
     }
-
     h.display();
 }
 @
@@ -1239,20 +1258,6 @@ matches the algorithm described in [[<<find matches naively>>]]:
 evaluate each expression one after the other
 without attempting to leverage the commonalities
 that they may share.
-
-<<functions>>=
-fn read_exprs() -> Vec<Expr> {
-    let mut exprs = Vec::new();
-    let stdin = io::stdin();
-    let mut buf = String::new();
-    while stdin.read_line(&mut buf).unwrap() > 0 {
-        let expr = Expr::from_str(&buf);
-        exprs.push(expr);
-        buf.clear();
-    }
-    return exprs;
-}
-@
 
 <<functions>>=
 fn naive_match_exprs(exprs: &[Expr], env: &Env) -> usize {
@@ -1296,12 +1301,12 @@ fn exp_match_1() {
         let now = Instant::now();
         let expr_matches = naive_match_exprs(&exprs, &env);
         let elapsed = now.elapsed();
-        let expr_time = elapsed.as_secs() + (elapsed.subsec_nanos() as u64);
+        let expr_time = 1e9 * (elapsed.as_secs() as f64) + (elapsed.subsec_nanos() as f64);
 
         let now = Instant::now();
         let cnf_matches = naive_match_cnf(&cnf_exprs, &env);
         let elapsed = now.elapsed();
-        let cnf_time = elapsed.as_secs() + (elapsed.subsec_nanos() as u64);
+        let cnf_time = 1e9 * (elapsed.as_secs() as f64) + (elapsed.subsec_nanos() as f64);
 
         assert_eq!(expr_matches, cnf_matches);
         h.tally(cnf_time as f64 / expr_time as f64);
@@ -1316,26 +1321,288 @@ Having done the simple matching, let's try to use
 the regularity of the conjunctive normal form to
 try and evaluate fewer clauses and expressions.
 
-Here is the outline of this new strategy:
-\begin{enumerate}
-\item find the unevaluated clause used in the most expressions;
-\item evaluate the clause;
-\item if the evaluation succeeds, goto 1;
-\item if the evaluation fails, perform the following steps:
-    \begin{enumerate}
-    \item
-    \end{enumerate}
-\end{enumerate}
+\begin{itemize}
+\item Keep a map from clauses to expressions that have this clause;
+\item Evaluate the most common clause, i.e., the one that has the
+    largest set of expressions;
+\item If evaluation fails, mark all the expressions as failed;
+\item Repeat until no clause remains.
+\end{itemize}
+
+
+<<functions>>=
+fn exp_match_2() {
+    let mut h1 = Histogram::new(10);
+    let mut h2 = Histogram::new(10);
+    let exprs = read_exprs();
+    let mut expr_success = vec![true; exprs.len()];
+
+    let mut all_vars = HashSet::new();
+    for expr in exprs.iter() {
+        expr.vars(&mut all_vars);
+    }
+
+    // Create a map from clause to expressions.
+    let mut clause_expr: HashMap<CNFClause, HashSet<usize>> = HashMap::new();
+    for (i, expr) in exprs.iter().enumerate() {
+        let cnf_expr = expr.to_cnf();
+        for clause in cnf_expr.0.iter() {
+            let entry = clause_expr.entry(clause.clone()).or_insert(HashSet::new());
+            entry.insert(i);
+        }
+    }
+
+    // Order the clauses from most popular to least popular.
+    let mut clause_expr_vec: Vec<(CNFClause, HashSet<usize>)> = clause_expr.into_iter().collect();
+    clause_expr_vec.sort_by(|&(_, ref s1), &(_, ref s2)| Ord::cmp(&s2.len(), &s1.len()));
+
+    for _ in 0 .. EVAL_ITER {
+        let env = Env::random(&all_vars);
+
+        let now = Instant::now();
+        let expr_matches = naive_match_exprs(&exprs, &env);
+        let elapsed = now.elapsed();
+        let expr_time = 1e9 * (elapsed.as_secs() as f64) + (elapsed.subsec_nanos() as f64);
+
+        let now = Instant::now();
+        for &(ref clause, ref expr_ids) in clause_expr_vec.iter() {
+            let x = clause.eval(&env);
+            if !x {
+                for i in expr_ids {
+                    expr_success[*i] = false;
+                }
+            }
+        }
+        let elapsed = now.elapsed();
+        let cnf_time = 1e9 * (elapsed.as_secs() as f64) + (elapsed.subsec_nanos() as f64);
+
+        h1.tally(cnf_time / expr_time);
+        h2.tally(expr_time / cnf_time);
+    }
+    println!("cnf over vanilla");
+    h1.display();
+
+    println!("vanilla over cnf");
+    h2.display();
+}
+@
+
+The results show that matching CNF expressions
+in this way is slower than evaluating the regular
+expressions or the CNF expressions one-by-one.
+
+The main issue here is that we evaluate \emph{all}
+the clauses.  However, we never remove clauses if
+the number of still-viable expressions reaches zero.
+
+
+\subsection{Removing clauses}
+
+(My first attempt at removing clauses fell into
+an insidious trap: the time to maintain the data
+structures far exceeded the time required to
+evaluate the clauses!)
+
+The previous experiment showed that evaluating
+every clause once was slower than going expression
+by expression.  Certainly, many clauses were evaluated
+that had no reason to be considered further.
+In this experiment, we'll try and implement a smarter
+matching mechanism that skips over clauses if they
+need not be evaluated (i.e., if all the expressions
+they belong to have already failed).
+
+\paragraph{Data structures}
+In order to keep track of which clauses still need
+to be evaluted, we will need a number of appropriate
+data structures.
+
+\begin{description}
+\item[[clauses: Vec<CNFClause>]] a vector containing all the
+    clauses of all the expressions.
+\item[[succeeded: Vec<bool>]] a vector containing \emph{true}
+    if the $j$th expression succeeded, and \emph{false}
+    otherwise.
+\item[[still_needed: Vec<usize>]] a vector indexed by clause id;
+    the value at index $i$ denotes the number of CNF expressions
+    that may still succeed if the $i$th clause evaluates to
+    \emph{true}.
+    When a clause fails, we set this value to zero,
+    i.e., all the expressions that depend on the $i$th clause
+    \emph{will} fail, and thus the clause is no longer needed.
+    If the count for a clause is zero, we need not evaluate it.
+\item[[comrades: Vec<Vec<usize>>]] a vector containing
+    vectors of clause ids.  The vector at position $i$
+    contains the indices of all the clauses that appear
+    in an expression with the $i$th clause.
+\item[[exprs_of: Vec<Vec<usize>>]] a vector containing
+    vectors of expression ids.  The vector at position $i$
+    contains the indices of all the expressions that
+    have the $i$th clause.
+\end{description}
+
+The code below illustrates how these data structures
+are used to find which expressions match a given environment.
+
+<<match with clause removal>>=
+for (i, c) in clauses.iter().enumerate() {
+    if still_needed[i] == 0 { continue; }
+    let x = c.eval(&env);
+    if !x {
+        still_needed[i] = 0;
+        for comrade in comrades[i].iter() { still_needed[*comrade] -= 1; }
+        for expr in exprs_of[i].iter() { succeeded[*expr] = false; }
+    }
+}
+@
+
+\paragraph{Data structure initialization}
+Let us populate the structures with the appropriate data.
+As in previous experiments, the first two structures
+that we initialize are the vector of expressions read
+from stdin, and the set that contains the variables found
+in those expressions.
+
+<<match3 data structures initialization>>=
+let exprs: Vec<Expr> = read_exprs();
+let mut all_vars: HashSet<usize> = HashSet::new();
+for expr in exprs.iter() {
+    expr.vars(&mut all_vars);
+}
+@
+
+We can initialize the [[succeeded]] vector in a single line of code:
+we use Rust's [[vec!]] macro to create a vector
+of length equal to the number of expressions,
+and initialize all the elements to \emph{true}.
+
+<<match3 data structures initialization>>=
+let mut succeeded: Vec<bool> = vec![true; exprs.len()];
+@
+
+The other data structures, those indexed by a clause id,
+require more work.  In order to help us, we'll have an
+extra data structure, [[clause_ids]], a map between a
+clause and its position in the [[clauses]] vector.
+This structure will not be used for the actual evaluation,
+but it will make the initialization easier.
+The variable [[next_clause_id]] contains the index
+that the next unseen clause will have.
+
+<<match3 data structures initialization>>=
+let mut clause_ids: HashMap<CNFClause, usize> = HashMap::new();
+let mut clauses: Vec<CNFClause> = Vec::new();
+let mut still_needed: Vec<usize> = Vec::new();
+let mut comrades: Vec<HashSet<usize>> = Vec::new();
+let mut exprs_of: Vec<HashSet<usize>> = Vec::new();
+let mut next_clause_id = 0;
+@
+
+The code for populating the data structures is found
+below.  Let us note a few salient points:
+\begin{itemize}
+\item When [[clause_id]] and [[next_clause_id]] are equal,
+    then the clause has never been seen before and we
+    have to push it into the clauses vector and add
+    a new element for all other vectors index by clause id.
+\item We maintain a vector, [[clause_comrades]],
+    which contains the expression's clauses' ids;
+    once all clauses have been processed, we use this
+    vector to populate the [[comrades]] sets of the
+    expressions clauses.
+\end{itemize}
+
+<<match3 data structures initialization>>=
+for (expr_id, expr) in exprs.iter().enumerate() {
+    let cnf_expr = expr.to_cnf();
+
+    let mut clause_comrades = Vec::new();
+    for clause in cnf_expr.0 {
+        let clause_id = *clause_ids.entry(clause.clone()).or_insert(next_clause_id);
+        if clause_id == next_clause_id {
+            clauses.push(clause);
+            still_needed.push(0);
+            comrades.push(HashSet::new());
+            exprs_of.push(HashSet::new());
+            next_clause_id += 1;
+        }
+        clause_comrades.push(clause_id);
+        still_needed[clause_id] += 1;
+        exprs_of[clause_id].insert(expr_id);
+    }
+    for &com1 in clause_comrades.iter() {
+        for &com2 in clause_comrades.iter() {
+            if com1 != com2 {
+                comrades[com1].insert(com2);
+            }
+        }
+    }
+}
+@
+
+
+
+<<functions>>=
+fn exp_match_3() {
+    let mut h1 = Histogram::new(10);
+    let mut h2 = Histogram::new(10);
+
+    <<match3 data structures initialization>>
+
+    // Take a copy of structures that will mutate
+    // to run the experiment multiple times.
+    let orig_still_needed = still_needed.clone();
+    let orig_succeeded = succeeded.clone();
+
+    //println!("clauses     : {:?}", clauses);
+    //println!("succeeded   : {:?}", succeeded);
+    //println!("still_needed: {:?}", still_needed);
+    //println!("comrades    : {:?}", comrades);
+    //println!("exprs_of    : {:?}", exprs_of);
+
+    for _ in 0 .. EVAL_ITER {
+        let env = Env::random(&all_vars);
+
+        let now = Instant::now();
+        let expr_matches = naive_match_exprs(&exprs, &env);
+        let elapsed = now.elapsed();
+        let expr_time = 1e9 * (elapsed.as_secs() as f64) + (elapsed.subsec_nanos() as f64);
+
+        succeeded = orig_succeeded.clone();
+        still_needed = orig_still_needed.clone();
+        let now = Instant::now();
+        <<match with clause removal>>
+        let elapsed = now.elapsed();
+        let cnf_time = 1e9 * (elapsed.as_secs() as f64) + (elapsed.subsec_nanos() as f64);
+
+        //assert_eq!(expr_matches, succeeded.iter().filter(|x| **x).count());
+        h1.tally(cnf_time as f64 / expr_time as f64);
+        h2.tally(expr_time as f64 / cnf_time as f64);
+    }
+    println!("cnf over vanilla");
+    h1.display();
+
+    println!("vanilla over cnf");
+    h2.display();
+}
+@
+
+
 
 
 \section{Putting it all together}
+
+We can put invoke our different experiments
+by creating a runner program that calls the
+appropriate function.
+
 
 <<cnf.rs>>=
 extern crate rand;
 
 use std::cmp;
 use std::cmp::Ord;
-use std::collections::{BinaryHeap, HashSet, BTreeMap, HashMap};
+use std::collections::{HashSet, BTreeMap, HashMap};
 use std::env;
 use std::fmt;
 use std::io;
@@ -1351,6 +1618,14 @@ const EVAL_ITER: usize = 10_000;
 <<parse functions>>
 <<functions>>
 
+fn interactive() {
+    let exprs = read_exprs();
+    for expr in exprs.iter() {
+        let cnf_expr = expr.to_cnf();
+        println!("{} == {}", expr, cnf_expr);
+    }
+}
+
 #[cfg(not(test))]
 fn main() {
     let args = env::args().collect::<Vec<String>>();
@@ -1359,26 +1634,59 @@ fn main() {
     }
     if args[1] == "parse" {
         exp_parse_and_convert();
+    } else if args[1] == "interactive" {
+        interactive();
     } else if args[1] == "count" {
         count_common_expressions();
-    } else if args[1] == "diff" {
+    } else if args[1] == "size_diff" {
         exp_size_diff();
+    } else if args[1] == "duplicates" {
+        exp_duplicates();
     } else if args[1] == "eval" {
         exp_eval_correctness();
     } else if args[1] == "bench" {
         exp_eval_speed();
     } else if args[1] == "match1" {
         exp_match_1();
+    } else if args[1] == "match2" {
+        exp_match_2();
+    } else if args[1] == "match3" {
+        exp_match_3();
     } else {
         usage();
     }
 }
 
 fn usage() -> ! {
-    println!("usage: cnf <parse | count | diff | eval | bench | match1>");
+    println!("usage: cnf <command>");
+    println!("Commands:");
+    println!("- parse     : try to parse the expressions.");
+    println!("- count     : display the 20 most common CNF clauses and their count.");
+    println!("- size_diff : display a histogram of the expression:CNF size ratios.");
+    println!("- duplicates: display duplicate clauses in CNF expressions.");
+    println!("- eval      : evaluate each expression and CNF expression {} times and ensure they match.", EVAL_ITER);
+    println!("- bench     : display a histogram of the CNF:expression time ratios for evaluating each expression {} times.", EVAL_ITER);
+    println!("- match1    : display a histogram of the CNF:expression time ratios for evaluating all expressions. Naive approach: iterate over each expression/CNF expression and invoke .eval().");
+    println!("- match2    : display a histogram of the CNF:expression time ratios when evaluating one clause at a time without removals");
     process::exit(1);
 }
 @
+
+
+<<functions>>=
+fn read_exprs() -> Vec<Expr> {
+    let mut exprs = Vec::new();
+    let stdin = io::stdin();
+    let mut buf = String::new();
+    while stdin.read_line(&mut buf).unwrap() > 0 {
+        let expr = Expr::from_str(&buf);
+        exprs.push(expr);
+        buf.clear();
+    }
+    return exprs;
+}
+@
+
 
 \section{Erlang}
 
