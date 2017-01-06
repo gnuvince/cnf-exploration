@@ -1071,7 +1071,6 @@ the size of its CNF conversion.
 fn exp_size_diff() {
     let exprs = read_exprs();
     let mut h = Histogram::new(10);
-    let mut total_count: usize = 0;
 
     for expr in exprs.iter() {
         let cnf_expr = expr.to_cnf();
@@ -1247,7 +1246,7 @@ fn exp_eval_speed() {
 }
 @
 
-\subsection{Evaluating all expressions (Strategy 1)}
+\subsection{Evaluating all expressions (expression-by-expression)}
 
 The previous section gave us a sense of how much
 time evaluating the individual expressions took.
@@ -1317,7 +1316,7 @@ fn exp_match_1() {
 }
 @
 
-\subsection{Evaluating all expressions (Strategy 2)}
+\subsection{Evaluating all expressions (clause-by-clause)}
 
 Having done the simple matching, let's try to use
 the regularity of the conjunctive normal form to
@@ -1398,7 +1397,7 @@ the clauses.  However, we never remove clauses if
 the number of still-viable expressions reaches zero.
 
 
-\subsection{Removing clauses}
+\subsection{Evaluating all expressions (clause-by-clause, removing clauses)}
 
 (My first attempt at removing clauses fell into
 an insidious trap: the time to maintain the data
@@ -1430,8 +1429,8 @@ data structures.
     that may still succeed if the $i$th clause evaluates to
     \emph{true}.
     When a clause fails, we set this value to zero,
-    i.e., all the expressions that depend on the $i$th clause
-    \emph{will} fail, and thus the clause is no longer needed.
+    i.e., expression that depend on the $i$th clause
+    can succeed, and thus the clause is no longer relevant.
     If the count for a clause is zero, we need not evaluate it.
 \item[[comrades: Vec<Vec<usize>>]] a vector containing
     vectors of clause ids.  The vector at position $i$
@@ -1607,7 +1606,6 @@ use std::cmp::Ord;
 use std::collections::{HashSet, BTreeMap, HashMap};
 use std::env;
 use std::fmt;
-use std::hash::Hash;
 use std::io;
 use std::iter;
 use std::process;
