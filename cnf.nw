@@ -1270,6 +1270,16 @@ fn naive_match_exprs(exprs: &[Expr], env: &Env) -> usize {
     }
     return matches;
 }
+
+fn naive_match_vec(exprs: &[Expr], env: &Env) -> Vec<usize> {
+    let mut matches = Vec::new();
+    for (i, expr) in exprs.iter().enumerate() {
+        if expr.eval(env) {
+            matches.push(i);
+        }
+    }
+    return matches;
+}
 @
 
 <<functions>>=
@@ -1399,11 +1409,6 @@ the number of still-viable expressions reaches zero.
 
 \subsection{Evaluating all expressions (clause-by-clause, removing clauses)}
 
-(My first attempt at removing clauses fell into
-an insidious trap: the time to maintain the data
-structures far exceeded the time required to
-evaluate the clauses!)
-
 The previous experiment showed that evaluating
 every clause once was slower than going expression
 by expression.  Certainly, many clauses were evaluated
@@ -1428,18 +1433,15 @@ data structures.
     the value at index $i$ denotes the number of CNF expressions
     that may still succeed if the $i$th clause evaluates to
     \emph{true}.
-    When a clause fails, we set this value to zero,
-    i.e., expression that depend on the $i$th clause
-    can succeed, and thus the clause is no longer relevant.
     If the count for a clause is zero, we need not evaluate it.
-\item[[comrades: Vec<Vec<usize>>]] a vector containing
-    vectors of clause ids.  The vector at position $i$
-    contains the indices of all the clauses that appear
-    in an expression with the $i$th clause.
-\item[[exprs_of: Vec<Vec<usize>>]] a vector containing
-    vectors of expression ids.  The vector at position $i$
-    contains the indices of all the expressions that
-    have the $i$th clause.
+\item[[clauses_of: Vec<Vec<usize>>]] a vector indexed by expression id;
+    it contains vectors of clause ids.
+    The vector at position $i$ contains the indices of all the clauses
+    that appear in the $j$th expression.
+\item[[exprs_of: Vec<Vec<usize>>]] a vector index by clause id;
+    it contains vectors of expression ids.
+    The vector at position $i$ contains the indices of all the
+    expressions that have the $i$th clause.
 \end{description}
 
 The code below illustrates how these data structures
@@ -1450,11 +1452,31 @@ for (i, c) in clauses.iter().enumerate() {
     if still_needed[i] == 0 { continue; }
     let x = c.eval(&env);
     if !x {
-        still_needed[i] = 0;
-        for comrade in comrades[i].iter() { still_needed[*comrade] -= 1; }
+        for eid in exprs_of[i].iter() {
+            if !succeeded[*eid] { continue; }
+            succeeded[*eid] = false;
+            for cid in clauses_of[*eid].iter() {
+                still_needed[*cid] = still_needed[*cid].saturating_sub(1);
+            }
+        }
+    }
+}
+@
+
+
+<<match with clause removal>>=
+/*
+for (i, c) in clauses.iter().enumerate() {
+    if still_needed[i] == 0 { continue; }
+    let x = c.eval(&env);
+    if !x {
+        for comrade in comrades[i].iter() {
+            still_needed[*comrade] = still_needed[*comrade].saturating_sub(1);
+        }
         for expr in exprs_of[i].iter() { succeeded[*expr] = false; }
     }
 }
+*/
 @
 
 \paragraph{Data structure initialization}
@@ -1494,8 +1516,8 @@ that the next unseen clause will have.
 let mut clause_ids: HashMap<CNFClause, usize> = HashMap::new();
 let mut clauses: Vec<CNFClause> = Vec::new();
 let mut still_needed: Vec<usize> = Vec::new();
-let mut comrades: Vec<HashSet<usize>> = Vec::new();
-let mut exprs_of: Vec<HashSet<usize>> = Vec::new();
+let mut clauses_of: Vec<Vec<usize>> = Vec::new();
+let mut exprs_of: Vec<Vec<usize>> = Vec::new();
 let mut next_clause_id = 0;
 @
 
@@ -1506,37 +1528,24 @@ below.  Let us note a few salient points:
     then the clause has never been seen before and we
     have to push it into the clauses vector and add
     a new element for all other vectors index by clause id.
-\item We maintain a vector, [[clause_comrades]],
-    which contains the expression's clauses' ids;
-    once all clauses have been processed, we use this
-    vector to populate the [[comrades]] sets of the
-    expressions clauses.
 \end{itemize}
 
 <<match3 data structures initialization>>=
 for (expr_id, expr) in exprs.iter().enumerate() {
     let cnf_expr = expr.to_cnf();
+    clauses_of.push(Vec::new());
 
-    let mut clause_comrades = Vec::new();
     for clause in cnf_expr.0 {
         let clause_id = *clause_ids.entry(clause.clone()).or_insert(next_clause_id);
         if clause_id == next_clause_id {
             clauses.push(clause);
             still_needed.push(0);
-            comrades.push(HashSet::new());
-            exprs_of.push(HashSet::new());
+            exprs_of.push(Vec::new());
             next_clause_id += 1;
         }
-        clause_comrades.push(clause_id);
+        clauses_of[expr_id].push(clause_id);
         still_needed[clause_id] += 1;
-        exprs_of[clause_id].insert(expr_id);
-    }
-    for &com1 in clause_comrades.iter() {
-        for &com2 in clause_comrades.iter() {
-            if com1 != com2 {
-                comrades[com1].insert(com2);
-            }
-        }
+        exprs_of[clause_id].push(expr_id);
     }
 }
 @
@@ -1576,7 +1585,9 @@ fn exp_match_3() {
         let elapsed = now.elapsed();
         let cnf_time = 1e9 * (elapsed.as_secs() as f64) + (elapsed.subsec_nanos() as f64);
 
-        //assert_eq!(expr_matches, succeeded.iter().filter(|x| **x).count());
+        let cnf_matches: Vec<usize> = succeeded.iter().enumerate().filter(|&(_,e)| *e).map(|(i,_)| i).collect();
+        assert_eq!(expr_matches, cnf_matches.len());
+
         h1.tally(cnf_time as f64 / expr_time as f64);
         h2.tally(expr_time as f64 / cnf_time as f64);
     }
