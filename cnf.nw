@@ -195,8 +195,8 @@ enum CNFLiteral {
 
 \paragraph{Simple constructors}
 Creating a CNF Expression structure by hand isn't hard,
-but it's certainly verbose.  In the next chunk, we introduce
-two constructors that are going to simplify some down the line:
+but it's certainly verbose.  In this next chunk, we write
+two constructors that reduce verbiage down the line:
 [[var]] to create a CNF expression of a single variable, and
 [[not]] to create the negation of a single variable.
 
@@ -219,7 +219,7 @@ on expressions and CNF expressions.
 
 \paragraph{Display}
 Our first order of business is to provide a way to print expressions;
-the default format of [[Debug]] quickly gets unreadble
+the default format of [[Debug]] quickly gets unreadable
 with all the extra boxes and vectors.  We implement the [[Display]]
 trait for expressions and for CNF expressions.  We also
 deactivate the warnings that are triggered by not using the
@@ -680,7 +680,7 @@ In \emph{rtb-boolean}, the environment is a bid request:
 the fields are the variable names with their associated values.
 (Technically, not all the fields of a bid request are variables
 since only some of them are actually exposed to the user.
-See [[variables_definition/0]]).
+See [[variables_definition/0]].)
 
 
 Like before, we can simplify our prototype by having only
@@ -934,7 +934,7 @@ method, specifying the number of windows they want.
 fn new(num_windows: usize) -> Histogram {
     Histogram {
         num_windows: num_windows,
-        buckets: iter::repeat(0).take(num_windows + 1).collect()
+        buckets: vec![0; num_windows + 1]
     }
 }
 @
@@ -959,8 +959,8 @@ fn tally(&mut self, r: f64) {
 @
 
 \paragraph{Unit tests}
-Let's test our [[Histogram]] by create a simple one and
-performing a few manual tallies.
+Let's test our [[Histogram]] structure by creating a simple
+histogram and performing a few manual tallies.
 
 <<unit tests>>=
 #[test]
@@ -1270,16 +1270,6 @@ fn naive_match_exprs(exprs: &[Expr], env: &Env) -> usize {
     }
     return matches;
 }
-
-fn naive_match_vec(exprs: &[Expr], env: &Env) -> Vec<usize> {
-    let mut matches = Vec::new();
-    for (i, expr) in exprs.iter().enumerate() {
-        if expr.eval(env) {
-            matches.push(i);
-        }
-    }
-    return matches;
-}
 @
 
 <<functions>>=
@@ -1463,22 +1453,6 @@ for (i, c) in clauses.iter().enumerate() {
 }
 @
 
-
-<<match with clause removal>>=
-/*
-for (i, c) in clauses.iter().enumerate() {
-    if still_needed[i] == 0 { continue; }
-    let x = c.eval(&env);
-    if !x {
-        for comrade in comrades[i].iter() {
-            still_needed[*comrade] = still_needed[*comrade].saturating_sub(1);
-        }
-        for expr in exprs_of[i].iter() { succeeded[*expr] = false; }
-    }
-}
-*/
-@
-
 \paragraph{Data structure initialization}
 Let us populate the structures with the appropriate data.
 As in previous experiments, the first two structures
@@ -1618,7 +1592,6 @@ use std::collections::{HashSet, BTreeMap, HashMap};
 use std::env;
 use std::fmt;
 use std::io;
-use std::iter;
 use std::process;
 use std::time::{Instant};
 
@@ -1680,6 +1653,7 @@ fn usage() -> ! {
     println!("- bench     : display a histogram of the CNF:expression time ratios for evaluating each expression {} times.", EVAL_ITER);
     println!("- match1    : display a histogram of the CNF:expression time ratios for evaluating all expressions. Naive approach: iterate over each expression/CNF expression and invoke .eval().");
     println!("- match2    : display a histogram of the CNF:expression time ratios when evaluating one clause at a time without removals");
+    println!("- match3    : display a histogram of the CNF:expression time ratios when evaluating one clause at a time with removals");
     process::exit(1);
 }
 @
