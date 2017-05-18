@@ -10,6 +10,19 @@
 \usepackage{geometry}
 \usepackage{amsmath}
 \usepackage[titletoc,title]{appendix}
+\usepackage{listings}
+
+\lstset{
+  stepnumber=1,
+  breaklines=true,
+  basicstyle=\ttfamily\scriptsize,
+  numberstyle=\tiny,
+  commentstyle=\color{gray},
+  showstringspaces=false,
+  keepspaces=true,
+  escapeinside=\#\#
+}
+
 
 \usepackage{pifont}% http://ctan.org/pkg/pifont
 \newcommand{\cmark}{\ding{51}}
@@ -1857,6 +1870,25 @@ dump(DeliteralizedAsts, Path) ->
 
 
 \begin{appendices}
+
+\section{}
+
+In this appendix, we include the output of the [[match1]],
+[[match2]], and [[match3]] experiments.  To update the
+experiments, run the command [[make experiments]] on the
+command-line.
+
+\textbf{Expression-by-expression evaluation}
+
+\lstinputlisting{results/match1.txt}
+
+\textbf{Clause-by-clause evaluation (no removal)}
+
+\lstinputlisting{results/match2.txt}
+
+\textbf{Clause-by-clause evaluation (with removal)}
+
+\lstinputlisting{results/match3.txt}
 
 \section{}
 

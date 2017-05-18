@@ -14,8 +14,13 @@ cargo: cnf.nw
 cnf.erl: cnf.nw
 	notangle -R"cnf.erl" $< > $@
 
+experiments: cargo
+	./cnf/target/release/cnf match1 <exprs.txt >results/match1.txt
+	./cnf/target/release/cnf match2 <exprs.txt >results/match2.txt
+	./cnf/target/release/cnf match3 <exprs.txt >results/match3.txt
+
 clean:
 	rm -f *.tex *.pdf *.out *.log *.nav *.aux
 	rm -f cnf.erl cnf.beam
 
-.PHONY: all clean cargo
+.PHONY: all clean cargo experiments
